@@ -63,7 +63,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-4 audio transport development receiver\n\n"
+        << L"AirPlayWin phase-5 AudioEngine integration development receiver\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
@@ -443,6 +443,8 @@ void PrintControlDiagnostics(
                << L": configured=" << (transport.configured ? L"yes" : L"no")
                << L", recording=" << (transport.recording ? L"yes" : L"no")
                << L", packets=" << transport.datagrams_received
+               << L", retransmitted=" << transport.retransmitted_packets
+               << L", stale_timeline=" << transport.timeline_rejected_packets
                << L", decoded=" << transport.decoded_packets
                << L", concealed=" << transport.concealed_packets
                << L", lost=" << transport.jitter_buffer.lost_packets
@@ -450,7 +452,17 @@ void PrintControlDiagnostics(
                << L", duplicate=" << transport.jitter_buffer.duplicate_packets
                << L", reordered=" << transport.jitter_buffer.reordered_packets
                << L", jitter_us="
-               << transport.jitter_buffer.interarrival_jitter_microseconds << L"\n"
+               << transport.jitter_buffer.interarrival_jitter_microseconds
+               << L", timeline_resets=" << transport.timeline_resets
+               << L", anchor_seq="
+               << (transport.has_sequence_anchor
+                       ? std::to_wstring(transport.sequence_anchor)
+                       : std::wstring{L"none"})
+               << L", anchor_rtptime="
+               << (transport.has_timestamp_anchor
+                       ? std::to_wstring(transport.timestamp_anchor)
+                       : std::wstring{L"none"})
+               << L"\n"
                << L"  audio: configured=" << (audio.configured ? L"yes" : L"no")
                << L", started=" << (audio.started ? L"yes" : L"no")
                << L", accepted_frames=" << audio.accepted_frames

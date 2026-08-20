@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "core/audio/AudioStreamTypes.h"
@@ -8,6 +9,17 @@
 #include "core/transport/RtpJitterBuffer.h"
 
 namespace airplaywin::transport {
+
+// A sender-provided lower bound for a new RTP timeline. Sequence numbers and
+// timestamps use their native wrapping domains and are compared wrap-aware.
+struct AudioTimelineAnchor final {
+    std::optional<std::uint16_t> sequence_number{};
+    std::optional<std::uint32_t> rtp_timestamp{};
+
+    [[nodiscard]] constexpr bool IsEmpty() const noexcept {
+        return !sequence_number.has_value() && !rtp_timestamp.has_value();
+    }
+};
 
 struct AudioTransportSetupRequest final {
     ConnectionId connection_id{0U};
@@ -49,6 +61,13 @@ struct AudioTransportDiagnostics final {
     std::uint64_t invalid_rtp_packets{0U};
     std::uint64_t unexpected_source_packets{0U};
     std::uint64_t unexpected_payload_packets{0U};
+    std::uint64_t retransmitted_packets{0U};
+    std::uint64_t timeline_rejected_packets{0U};
+    std::uint64_t timeline_resets{0U};
+    bool has_sequence_anchor{false};
+    bool has_timestamp_anchor{false};
+    std::uint16_t sequence_anchor{0U};
+    std::uint32_t timestamp_anchor{0U};
     std::uint64_t decoded_packets{0U};
     std::uint64_t decoded_frames{0U};
     std::uint64_t concealed_packets{0U};

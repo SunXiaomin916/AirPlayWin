@@ -48,7 +48,8 @@ void TestRtpAudioStream() {
         },
         std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink};
     APW_EXPECT(stream.Start());
-    APW_EXPECT(stream.Record());
+    APW_EXPECT(stream.Record({.sequence_number = static_cast<std::uint16_t>(1U),
+                              .rtp_timestamp = 1'000U}));
 
     const DatagramEndpoint source{.ipv4_address_network_order = 0x0100'007FU,
                                   .port = 7'000U};
@@ -89,12 +90,26 @@ void TestRtpAudioStream() {
     stream.OnDatagram(packet5, source, 1'004'000'000LL);
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     APW_EXPECT(sink.SubmittedFrames() == 4U);
-    stream.Resume();
+    stream.Resume({});
     APW_EXPECT(WaitForFrames(sink, 5U));
     stream.SetVolume(0.25F);
     APW_EXPECT_NEAR(sink.Volume(), 0.25, 0.00001);
-    stream.Flush();
+    stream.Flush({.sequence_number = static_cast<std::uint16_t>(20U),
+                  .rtp_timestamp = 2'000U});
     APW_EXPECT(sink.FlushCount() == 1U);
+    const auto stale_after_flush = BuildRtpPacket(19U, 1'999U, positive);
+    stream.OnDatagram(stale_after_flush, source, 1'005'000'000LL);
+    APW_EXPECT(stream.Diagnostics().timeline_rejected_packets == 1U);
+    APW_EXPECT(stream.Diagnostics().sequence_anchor == 20U);
+    APW_EXPECT(stream.Diagnostics().timestamp_anchor == 2'000U);
+    stream.Flush({.sequence_number = static_cast<std::uint16_t>(65'535U),
+                  .rtp_timestamp = 4'294'967'295U});
+    const auto wrapped_sequence0 = BuildRtpPacket(0U, 0U, positive);
+    const auto wrapped_sequence1 = BuildRtpPacket(1U, 1U, positive);
+    stream.OnDatagram(wrapped_sequence0, source, 1'006'000'000LL);
+    stream.OnDatagram(wrapped_sequence1, source, 1'007'000'000LL);
+    APW_EXPECT(WaitForFrames(sink, 7U));
+    APW_EXPECT(stream.Diagnostics().timeline_rejected_packets == 1U);
     stream.Stop();
     APW_EXPECT(sink.StopCount() == 1U);
 }

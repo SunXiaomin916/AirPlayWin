@@ -3,11 +3,13 @@
 #include <string>
 
 #include "core/protocol/RtspTransport.h"
+#include "core/protocol/RtpInfo.h"
 #include "core/protocol/SdpAudioParser.h"
 
 void TestSdpAndTransport() {
     using airplaywin::protocol::BuildRecordTransportResponse;
     using airplaywin::protocol::ParseRecordTransport;
+    using airplaywin::protocol::ParseRtpInfo;
     using airplaywin::protocol::ParseSdpAudioDescription;
     using airplaywin::protocol::SdpParseError;
     using airplaywin::protocol::TransportParseError;
@@ -52,4 +54,15 @@ void TestSdpAndTransport() {
     const auto bad_mode = ParseRecordTransport("RTP/AVP/UDP;unicast;mode=play");
     APW_EXPECT(!bad_mode.has_value());
     APW_EXPECT(bad_mode.error() == TransportParseError::InvalidMode);
+
+    const auto rtp_info = ParseRtpInfo(
+        "url=rtsp://127.0.0.1/stream;seq=65535;rtptime=4294967295");
+    APW_EXPECT(rtp_info.has_value());
+    APW_EXPECT(rtp_info->sequence_number == 65'535U);
+    APW_EXPECT(rtp_info->rtp_timestamp == 4'294'967'295U);
+    APW_EXPECT(!ParseRtpInfo("seq=-1;rtptime=5").has_value());
+    APW_EXPECT(!ParseRtpInfo("seq=65536;rtptime=5").has_value());
+    APW_EXPECT(!ParseRtpInfo("seq=1;rtptime=4294967296").has_value());
+    APW_EXPECT(!ParseRtpInfo("seq=1;seq=2").has_value());
+    APW_EXPECT(!ParseRtpInfo("url=rtsp://one,seq=2").has_value());
 }

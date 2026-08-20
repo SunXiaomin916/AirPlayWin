@@ -4,6 +4,7 @@
 #include <WS2tcpip.h>
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -65,6 +66,17 @@ void SendPacket(const SOCKET sender,
     APW_EXPECT(sent == static_cast<int>(packet.size()));
 }
 
+[[nodiscard]] std::vector<std::byte> WrapRetransmittedPacket(
+    const std::span<const std::byte> packet) {
+    std::vector<std::byte> wrapper(4U + packet.size());
+    wrapper[0U] = std::byte{0x80U};
+    wrapper[1U] = std::byte{0xD6U};
+    wrapper[2U] = std::byte{0x00U};
+    wrapper[3U] = std::byte{0x01U};
+    std::copy(packet.begin(), packet.end(), wrapper.begin() + 4);
+    return wrapper;
+}
+
 }  // namespace
 
 void TestRtpTransportIntegration() {
@@ -110,7 +122,12 @@ void TestRtpTransportIntegration() {
     APW_EXPECT(after_setup.server_control_port != 0U);
     APW_EXPECT(after_setup.server_timing_port != 0U);
 
-    APW_EXPECT(ReplyIsOk(service.OnBytes(kConnection, Bytes(Request("RECORD", 3U)))));
+    const auto record = service.OnBytes(
+        kConnection,
+        Bytes(Request("RECORD", 3U, "RTP-Info: seq=1;rtptime=10000\r\n")));
+    APW_EXPECT(ReplyIsOk(record));
+    APW_EXPECT(Text(record.writes.front()).find("Audio-Latency: 11025") !=
+               std::string::npos);
     APW_EXPECT(controller.Diagnostics().recording);
 
     const SOCKET sender = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -128,26 +145,63 @@ void TestRtpTransportIntegration() {
     while (sink.SubmittedFrames() < 4U && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
-    static_cast<void>(closesocket(sender));
     APW_EXPECT(sink.SubmittedFrames() == 4U);
+
+    const auto packet5 = BuildRtpPacket(5U, 10'004U, samples);
+    const auto retransmitted5 = WrapRetransmittedPacket(packet5);
+    const auto packet6 = BuildRtpPacket(6U, 10'005U, samples);
+    SendPacket(sender, after_setup.server_control_port, retransmitted5);
+    SendPacket(sender, after_setup.server_audio_port, packet6);
+    const auto retransmit_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (sink.SubmittedFrames() < 6U &&
+           std::chrono::steady_clock::now() < retransmit_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    static_cast<void>(closesocket(sender));
+    APW_EXPECT(sink.SubmittedFrames() == 6U);
     const auto transport = service.Diagnostics().transport;
-    APW_EXPECT(transport.datagrams_received == 3U);
-    APW_EXPECT(transport.decoded_packets == 3U);
+    APW_EXPECT(transport.datagrams_received == 5U);
+    APW_EXPECT(transport.decoded_packets == 5U);
     APW_EXPECT(transport.concealed_packets == 1U);
     APW_EXPECT(transport.jitter_buffer.lost_packets == 1U);
+    APW_EXPECT(transport.control_datagrams == 1U);
+    APW_EXPECT(transport.retransmitted_packets == 1U);
+    APW_EXPECT(transport.has_sequence_anchor && transport.sequence_anchor == 1U);
+    APW_EXPECT(transport.has_timestamp_anchor && transport.timestamp_anchor == 10'000U);
 
     const auto volume = service.OnBytes(
         kConnection,
         Bytes(Request("SET_PARAMETER", 4U, "Content-Type: text/parameters\r\n",
-                      "volume: -6.0")));
+                      "progress: 0/1/2\r\nvolume: -6.0")));
     APW_EXPECT(ReplyIsOk(volume));
     APW_EXPECT_NEAR(sink.Volume(), 0.501187, 0.0001);
-    APW_EXPECT(ReplyIsOk(service.OnBytes(kConnection, Bytes(Request("FLUSH", 5U)))));
+    const auto get_volume = service.OnBytes(
+        kConnection,
+        Bytes(Request("GET_PARAMETER", 5U, "Content-Type: text/parameters\r\n",
+                      "volume\r\n")));
+    APW_EXPECT(ReplyIsOk(get_volume));
+    APW_EXPECT(Text(get_volume.writes.front()).find("Content-Type: text/parameters") !=
+               std::string::npos);
+    APW_EXPECT(Text(get_volume.writes.front()).find("volume: -6.000000\r\n") !=
+               std::string::npos);
+    APW_EXPECT(ReplyIsOk(service.OnBytes(
+        kConnection,
+        Bytes(Request("FLUSH", 6U, "RTP-Info: seq=20;rtptime=11000\r\n")))));
     APW_EXPECT(sink.FlushCount() == 1U);
-    APW_EXPECT(ReplyIsOk(service.OnBytes(kConnection, Bytes(Request("PAUSE", 6U)))));
-    APW_EXPECT(ReplyIsOk(service.OnBytes(kConnection, Bytes(Request("RECORD", 7U)))));
+    APW_EXPECT(controller.Diagnostics().sequence_anchor == 20U);
+    APW_EXPECT(controller.Diagnostics().timestamp_anchor == 11'000U);
+    APW_EXPECT(ReplyIsOk(service.OnBytes(kConnection, Bytes(Request("PAUSE", 7U)))));
+    const auto invalid_record = service.OnBytes(
+        kConnection, Bytes(Request("RECORD", 8U, "RTP-Info: seq=oops\r\n")));
+    APW_EXPECT(Text(invalid_record.writes.front()).find("400 Bad Request") !=
+               std::string::npos);
+    APW_EXPECT(ReplyIsOk(service.OnBytes(
+        kConnection,
+        Bytes(Request("RECORD", 9U, "RTP-Info: seq=30;rtptime=12000\r\n")))));
+    APW_EXPECT(sink.FlushCount() == 2U);
 
-    const auto teardown = service.OnBytes(kConnection, Bytes(Request("TEARDOWN", 8U)));
+    const auto teardown = service.OnBytes(kConnection, Bytes(Request("TEARDOWN", 10U)));
     APW_EXPECT(ReplyIsOk(teardown));
     APW_EXPECT(teardown.close_after_writes);
     APW_EXPECT(!controller.Diagnostics().configured);

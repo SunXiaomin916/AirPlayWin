@@ -55,11 +55,12 @@ bool RtpAudioStream::Start() {
     return true;
 }
 
-bool RtpAudioStream::Record() {
+bool RtpAudioStream::Record(const AudioTimelineAnchor& anchor) {
     if (!running_.load(std::memory_order_acquire)) {
         return false;
     }
     std::scoped_lock processing_lock{processing_mutex_};
+    ResetPacketTimeline(anchor);
     if (!sink_.Start()) {
         last_error_.store(4U, std::memory_order_release);
         return false;
@@ -75,26 +76,26 @@ void RtpAudioStream::Pause() noexcept {
     sink_.Pause();
 }
 
-void RtpAudioStream::Resume() noexcept {
+void RtpAudioStream::Resume(const AudioTimelineAnchor& anchor) noexcept {
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
     {
         std::scoped_lock processing_lock{processing_mutex_};
+        if (!anchor.IsEmpty()) {
+            ResetPacketTimeline(anchor);
+            sink_.Flush();
+        }
         sink_.Resume();
     }
     recording_.store(true, std::memory_order_release);
     wake_.notify_all();
 }
 
-void RtpAudioStream::Flush() noexcept {
+void RtpAudioStream::Flush(const AudioTimelineAnchor& anchor) noexcept {
     std::scoped_lock processing_lock{processing_mutex_};
-    jitter_buffer_.Flush();
-    decoder_->Reset();
+    ResetPacketTimeline(anchor);
     sink_.Flush();
-    have_decoded_frame_ = false;
-    last_rtp_timestamp_ = 0U;
-    last_frame_count_ = 0U;
 }
 
 void RtpAudioStream::SetVolume(const float linear_gain) noexcept {
@@ -113,8 +114,7 @@ void RtpAudioStream::Stop() noexcept {
     }
     std::scoped_lock processing_lock{processing_mutex_};
     sink_.Stop();
-    jitter_buffer_.Flush();
-    decoder_->Reset();
+    ResetPacketTimeline({});
     configured_.store(false, std::memory_order_release);
 }
 
@@ -128,7 +128,14 @@ void RtpAudioStream::OnDatagram(const std::span<const std::byte> datagram,
         unexpected_source_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
-    const auto parsed = ParseRtpPacket(datagram);
+    constexpr std::uint8_t kRetransmittedPayloadType = 0x56U;
+    const bool is_retransmitted =
+        datagram.size() >= 2U &&
+        (std::to_integer<std::uint8_t>(datagram[1U]) & 0x7FU) ==
+            kRetransmittedPayloadType;
+    const auto rtp_datagram =
+        is_retransmitted && datagram.size() >= 4U ? datagram.subspan(4U) : datagram;
+    const auto parsed = ParseRtpPacket(rtp_datagram);
     if (!parsed.has_value()) {
         invalid_rtp_packets_.fetch_add(1U, std::memory_order_relaxed);
         last_error_.store(5U, std::memory_order_relaxed);
@@ -137,6 +144,9 @@ void RtpAudioStream::OnDatagram(const std::span<const std::byte> datagram,
     if (parsed->payload_type != config_.format.payload_type) {
         unexpected_payload_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
+    }
+    if (is_retransmitted) {
+        retransmitted_packets_.fetch_add(1U, std::memory_order_relaxed);
     }
     constexpr std::uint64_t kInitialized = std::uint64_t{1U} << 32U;
     std::uint64_t expected_source = stream_source_.load(std::memory_order_acquire);
@@ -149,6 +159,11 @@ void RtpAudioStream::OnDatagram(const std::span<const std::byte> datagram,
     const auto expected_ssrc = static_cast<std::uint32_t>(expected_source);
     if (parsed->ssrc != expected_ssrc) {
         unexpected_source_packets_.fetch_add(1U, std::memory_order_relaxed);
+        return;
+    }
+    std::scoped_lock timeline_lock{timeline_mutex_};
+    if (!IsAtOrAfterTimeline(*parsed)) {
+        timeline_rejected_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
     if (jitter_buffer_.Insert(*parsed, arrival_time_nanoseconds)) {
@@ -167,6 +182,19 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .unexpected_source_packets = unexpected_source_packets_.load(std::memory_order_relaxed),
         .unexpected_payload_packets =
             unexpected_payload_packets_.load(std::memory_order_relaxed),
+        .retransmitted_packets = retransmitted_packets_.load(std::memory_order_relaxed),
+        .timeline_rejected_packets =
+            timeline_rejected_packets_.load(std::memory_order_relaxed),
+        .timeline_resets = timeline_resets_.load(std::memory_order_relaxed),
+        .has_sequence_anchor =
+            (sequence_anchor_.load(std::memory_order_acquire) & 0x1'0000U) != 0U,
+        .has_timestamp_anchor =
+            (timestamp_anchor_.load(std::memory_order_acquire) &
+             (std::uint64_t{1U} << 32U)) != 0U,
+        .sequence_anchor = static_cast<std::uint16_t>(
+            sequence_anchor_.load(std::memory_order_relaxed)),
+        .timestamp_anchor = static_cast<std::uint32_t>(
+            timestamp_anchor_.load(std::memory_order_relaxed)),
         .decoded_packets = decoded_packets_.load(std::memory_order_relaxed),
         .decoded_frames = decoded_frames_.load(std::memory_order_relaxed),
         .concealed_packets = concealed_packets_.load(std::memory_order_relaxed),
@@ -176,6 +204,37 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .jitter_buffer = jitter_buffer_.Diagnostics(),
         .last_error = last_error_.load(std::memory_order_relaxed),
     };
+}
+
+void RtpAudioStream::ResetPacketTimeline(const AudioTimelineAnchor& anchor) noexcept {
+    std::scoped_lock timeline_lock{timeline_mutex_};
+    jitter_buffer_.Flush();
+    decoder_->Reset();
+    have_decoded_frame_ = false;
+    last_rtp_timestamp_ = 0U;
+    last_frame_count_ = 0U;
+    sequence_anchor_.store(anchor.sequence_number.has_value()
+                               ? 0x1'0000U | *anchor.sequence_number
+                               : 0U,
+                           std::memory_order_release);
+    timestamp_anchor_.store(anchor.rtp_timestamp.has_value()
+                                ? (std::uint64_t{1U} << 32U) | *anchor.rtp_timestamp
+                                : 0U,
+                            std::memory_order_release);
+    timeline_resets_.fetch_add(1U, std::memory_order_relaxed);
+}
+
+bool RtpAudioStream::IsAtOrAfterTimeline(const RtpPacketView& packet) const noexcept {
+    const auto sequence_anchor = sequence_anchor_.load(std::memory_order_acquire);
+    if ((sequence_anchor & 0x1'0000U) != 0U &&
+        static_cast<std::int16_t>(packet.sequence_number -
+                                  static_cast<std::uint16_t>(sequence_anchor)) < 0) {
+        return false;
+    }
+    const auto timestamp_anchor = timestamp_anchor_.load(std::memory_order_acquire);
+    return (timestamp_anchor & (std::uint64_t{1U} << 32U)) == 0U ||
+           static_cast<std::int32_t>(packet.timestamp -
+                                     static_cast<std::uint32_t>(timestamp_anchor)) >= 0;
 }
 
 void RtpAudioStream::WorkerLoop() noexcept {

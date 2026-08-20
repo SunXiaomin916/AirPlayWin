@@ -8,6 +8,10 @@ namespace airplaywin::windows::audio {
 WindowsAudioEngine::WindowsAudioEngine(WasapiOutputOptions options)
     : engine_(std::make_unique<WasapiAudioOutput>(std::move(options))) {}
 
+WindowsAudioEngine::WindowsAudioEngine(
+    std::unique_ptr<airplaywin::audio::IAudioOutput> output)
+    : engine_(std::move(output)) {}
+
 bool WindowsAudioEngine::Open(const airplaywin::audio::AudioFormat& format) {
     return engine_.Open(format);
 }

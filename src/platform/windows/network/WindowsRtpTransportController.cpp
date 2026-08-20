@@ -59,6 +59,9 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     }
 
     auto audio_receiver = std::make_unique<IocpUdpReceiver>(*stream);
+    control_handler_.Reset();
+    control_handler_.SetStream(stream.get());
+    timing_handler_.Reset();
     auto control_receiver = std::make_unique<IocpUdpReceiver>(control_handler_);
     auto timing_receiver = std::make_unique<IocpUdpReceiver>(timing_handler_);
     const IocpUdpReceiverOptions receiver_options{
@@ -78,13 +81,12 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         timing_receiver->Stop();
         control_receiver->Stop();
         audio_receiver->Stop();
+        control_handler_.SetStream(nullptr);
         stream->Stop();
         return {.error = AudioTransportSetupError::SocketFailure};
     }
 
     connection_id_ = request.connection_id;
-    control_handler_.Reset();
-    timing_handler_.Reset();
     stream_ = std::move(stream);
     audio_receiver_ = std::move(audio_receiver);
     control_receiver_ = std::move(control_receiver);
@@ -99,9 +101,10 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
 }
 
 bool WindowsRtpTransportController::Record(
-    const airplaywin::transport::ConnectionId connection_id) {
+    const airplaywin::transport::ConnectionId connection_id,
+    const airplaywin::transport::AudioTimelineAnchor& anchor) {
     std::scoped_lock lock{mutex_};
-    return stream_ && connection_id_ == connection_id && stream_->Record();
+    return stream_ && connection_id_ == connection_id && stream_->Record(anchor);
 }
 
 bool WindowsRtpTransportController::Pause(
@@ -115,22 +118,24 @@ bool WindowsRtpTransportController::Pause(
 }
 
 bool WindowsRtpTransportController::Resume(
-    const airplaywin::transport::ConnectionId connection_id) noexcept {
+    const airplaywin::transport::ConnectionId connection_id,
+    const airplaywin::transport::AudioTimelineAnchor& anchor) noexcept {
     std::scoped_lock lock{mutex_};
     if (!stream_ || connection_id_ != connection_id) {
         return false;
     }
-    stream_->Resume();
+    stream_->Resume(anchor);
     return true;
 }
 
 bool WindowsRtpTransportController::Flush(
-    const airplaywin::transport::ConnectionId connection_id) noexcept {
+    const airplaywin::transport::ConnectionId connection_id,
+    const airplaywin::transport::AudioTimelineAnchor& anchor) noexcept {
     std::scoped_lock lock{mutex_};
     if (!stream_ || connection_id_ != connection_id) {
         return false;
     }
-    stream_->Flush();
+    stream_->Flush(anchor);
     return true;
 }
 
@@ -185,6 +190,26 @@ void WindowsRtpTransportController::CountingHandler::Reset() noexcept {
     count_.store(0U, std::memory_order_relaxed);
 }
 
+void WindowsRtpTransportController::RetransmitHandler::OnDatagram(
+    const std::span<const std::byte> datagram,
+    const airplaywin::transport::DatagramEndpoint& source,
+    const std::int64_t arrival_time_nanoseconds) noexcept {
+    CountingHandler::OnDatagram(datagram, source, arrival_time_nanoseconds);
+    constexpr std::uint8_t kRetransmittedPayloadType = 0x56U;
+    if (datagram.size() >= 4U &&
+        (std::to_integer<std::uint8_t>(datagram[1U]) & 0x7FU) ==
+            kRetransmittedPayloadType) {
+        if (auto* const stream = stream_.load(std::memory_order_acquire); stream != nullptr) {
+            stream->OnDatagram(datagram, source, arrival_time_nanoseconds);
+        }
+    }
+}
+
+void WindowsRtpTransportController::RetransmitHandler::SetStream(
+    airplaywin::transport::IAudioStream* const stream) noexcept {
+    stream_.store(stream, std::memory_order_release);
+}
+
 void WindowsRtpTransportController::TeardownLocked() noexcept {
     if (timing_receiver_) {
         timing_receiver_->Stop();
@@ -192,6 +217,7 @@ void WindowsRtpTransportController::TeardownLocked() noexcept {
     if (control_receiver_) {
         control_receiver_->Stop();
     }
+    control_handler_.SetStream(nullptr);
     if (audio_receiver_) {
         audio_receiver_->Stop();
     }

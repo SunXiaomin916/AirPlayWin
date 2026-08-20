@@ -32,13 +32,17 @@ public:
 
     [[nodiscard]] airplaywin::transport::AudioTransportSetupResult Setup(
         const airplaywin::transport::AudioTransportSetupRequest& request) override;
-    [[nodiscard]] bool Record(airplaywin::transport::ConnectionId connection_id) override;
+    [[nodiscard]] bool Record(
+        airplaywin::transport::ConnectionId connection_id,
+        const airplaywin::transport::AudioTimelineAnchor& anchor) override;
     [[nodiscard]] bool Pause(
         airplaywin::transport::ConnectionId connection_id) noexcept override;
     [[nodiscard]] bool Resume(
-        airplaywin::transport::ConnectionId connection_id) noexcept override;
+        airplaywin::transport::ConnectionId connection_id,
+        const airplaywin::transport::AudioTimelineAnchor& anchor) noexcept override;
     [[nodiscard]] bool Flush(
-        airplaywin::transport::ConnectionId connection_id) noexcept override;
+        airplaywin::transport::ConnectionId connection_id,
+        const airplaywin::transport::AudioTimelineAnchor& anchor) noexcept override;
     void SetVolume(airplaywin::transport::ConnectionId connection_id,
                    float linear_gain) noexcept override;
     void Teardown(airplaywin::transport::ConnectionId connection_id) noexcept override;
@@ -46,7 +50,7 @@ public:
         const noexcept override;
 
 private:
-    class CountingHandler final : public airplaywin::transport::IUdpDatagramHandler {
+    class CountingHandler : public airplaywin::transport::IUdpDatagramHandler {
     public:
         void OnDatagram(std::span<const std::byte> datagram,
                         const airplaywin::transport::DatagramEndpoint& source,
@@ -58,13 +62,24 @@ private:
         std::atomic<std::uint64_t> count_{0U};
     };
 
+    class RetransmitHandler final : public CountingHandler {
+    public:
+        void OnDatagram(std::span<const std::byte> datagram,
+                        const airplaywin::transport::DatagramEndpoint& source,
+                        std::int64_t arrival_time_nanoseconds) noexcept override;
+        void SetStream(airplaywin::transport::IAudioStream* stream) noexcept;
+
+    private:
+        std::atomic<airplaywin::transport::IAudioStream*> stream_{nullptr};
+    };
+
     void TeardownLocked() noexcept;
 
     airplaywin::audio::IAudioFrameSink& sink_;
     WindowsRtpTransportOptions options_{};
     mutable std::mutex mutex_{};
     airplaywin::transport::ConnectionId connection_id_{0U};
-    CountingHandler control_handler_{};
+    RetransmitHandler control_handler_{};
     CountingHandler timing_handler_{};
     std::unique_ptr<airplaywin::transport::IAudioStream> stream_{};
     std::unique_ptr<IocpUdpReceiver> audio_receiver_{};

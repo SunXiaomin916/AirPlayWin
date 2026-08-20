@@ -33,10 +33,10 @@ public:
     RtpAudioStream& operator=(const RtpAudioStream&) = delete;
 
     [[nodiscard]] bool Start() override;
-    [[nodiscard]] bool Record() override;
+    [[nodiscard]] bool Record(const AudioTimelineAnchor& anchor) override;
     void Pause() noexcept override;
-    void Resume() noexcept override;
-    void Flush() noexcept override;
+    void Resume(const AudioTimelineAnchor& anchor) noexcept override;
+    void Flush(const AudioTimelineAnchor& anchor) noexcept override;
     void SetVolume(float linear_gain) noexcept override;
     void Stop() noexcept override;
     void OnDatagram(std::span<const std::byte> datagram,
@@ -47,6 +47,8 @@ public:
 private:
     void WorkerLoop() noexcept;
     void ProcessAvailablePackets() noexcept;
+    void ResetPacketTimeline(const AudioTimelineAnchor& anchor) noexcept;
+    [[nodiscard]] bool IsAtOrAfterTimeline(const RtpPacketView& packet) const noexcept;
     [[nodiscard]] bool SubmitWithBackpressure(const audio::DecodedAudioFrameView& frame) noexcept;
 
     RtpAudioStreamConfig config_{};
@@ -56,6 +58,7 @@ private:
     std::vector<float> decode_storage_{};
     mutable std::mutex state_mutex_{};
     std::mutex processing_mutex_{};
+    mutable std::mutex timeline_mutex_{};
     std::condition_variable wake_{};
     std::thread worker_{};
     std::atomic<bool> running_{false};
@@ -70,6 +73,11 @@ private:
     std::atomic<std::uint64_t> invalid_rtp_packets_{0U};
     std::atomic<std::uint64_t> unexpected_source_packets_{0U};
     std::atomic<std::uint64_t> unexpected_payload_packets_{0U};
+    std::atomic<std::uint64_t> retransmitted_packets_{0U};
+    std::atomic<std::uint64_t> timeline_rejected_packets_{0U};
+    std::atomic<std::uint64_t> timeline_resets_{0U};
+    std::atomic<std::uint32_t> sequence_anchor_{0U};
+    std::atomic<std::uint64_t> timestamp_anchor_{0U};
     std::atomic<std::uint64_t> decoded_packets_{0U};
     std::atomic<std::uint64_t> decoded_frames_{0U};
     std::atomic<std::uint64_t> concealed_packets_{0U};

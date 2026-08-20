@@ -21,11 +21,23 @@ param(
     [ValidateRange(0, 127)]
     [int]$PayloadType = 96,
 
+    [ValidateRange(0, 65535)]
+    [int]$StartSequence = 0,
+
+    [ValidateRange(0, 4294967295)]
+    [long]$StartTimestamp = 0,
+
     [ValidateRange(0, 1000000)]
     [int]$DropEvery = 0,
 
     [ValidateRange(0, 1000000)]
     [int]$DuplicateEvery = 0,
+
+    [ValidateRange(0, 1000000)]
+    [int]$RetransmitEvery = 0,
+
+    [ValidateRange(0, 65535)]
+    [int]$ControlPort = 0,
 
     [switch]$ReorderPairs,
 
@@ -34,6 +46,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($RetransmitEvery -gt 0 -and $ControlPort -eq 0) {
+    throw "-ControlPort is required when -RetransmitEvery is enabled."
+}
 
 function New-L16RtpPacket {
     param(
@@ -72,18 +88,33 @@ function New-L16RtpPacket {
     return $packet
 }
 
+function Add-RetransmissionWrapper {
+    param([byte[]]$Packet)
+
+    $wrapped = [byte[]]::new($Packet.Length + 4)
+    $wrapped[0] = 0x80
+    $wrapped[1] = 0xD6
+    $wrapped[2] = 0x00
+    $wrapped[3] = 0x01
+    [Array]::Copy($Packet, 0, $wrapped, 4, $Packet.Length)
+    return $wrapped
+}
+
 $udpClient = [System.Net.Sockets.UdpClient]::new()
 $ssrc = [uint32]0x41505734
 $heldPacket = $null
+$heldPort = 0
 $sentPackets = 0
 $droppedPackets = 0
 $duplicatedPackets = 0
+$retransmittedPackets = 0
 $packetDurationMilliseconds = 1000.0 * $FramesPerPacket / $SampleRate
 
 try {
     for ($index = 0; $index -lt $PacketCount; ++$index) {
-        $sequence = [uint16]($index -band 0xFFFF)
-        $timestamp = [uint32](($index * $FramesPerPacket) -band 0xFFFFFFFFL)
+        $sequence = [uint16](($StartSequence + $index) -band 0xFFFF)
+        $timestamp = [uint32](
+            ([uint64]$StartTimestamp + ([uint64]$index * $FramesPerPacket)) -band 0xFFFFFFFFL)
         $packet = New-L16RtpPacket -Sequence $sequence -Timestamp $timestamp `
             -SynchronizationSource $ssrc -Phase ($index * $FramesPerPacket)
 
@@ -92,33 +123,42 @@ try {
             continue
         }
 
+        $destinationPort = $Port
+        if ($RetransmitEvery -gt 0 -and (($index + 1) % $RetransmitEvery) -eq 0) {
+            $packet = Add-RetransmissionWrapper -Packet $packet
+            $destinationPort = $ControlPort
+            ++$retransmittedPackets
+        }
+
         if ($ReorderPairs -and $null -eq $heldPacket) {
             $heldPacket = $packet
+            $heldPort = $destinationPort
             continue
         }
 
-        [void]$udpClient.Send($packet, $packet.Length, $DestinationAddress, $Port)
+        [void]$udpClient.Send($packet, $packet.Length, $DestinationAddress, $destinationPort)
         ++$sentPackets
         if ($DuplicateEvery -gt 0 -and (($index + 1) % $DuplicateEvery) -eq 0) {
-            [void]$udpClient.Send($packet, $packet.Length, $DestinationAddress, $Port)
+            [void]$udpClient.Send($packet, $packet.Length, $DestinationAddress, $destinationPort)
             ++$sentPackets
             ++$duplicatedPackets
         }
         if ($null -ne $heldPacket) {
-            [void]$udpClient.Send($heldPacket, $heldPacket.Length, $DestinationAddress, $Port)
+            [void]$udpClient.Send($heldPacket, $heldPacket.Length, $DestinationAddress, $heldPort)
             ++$sentPackets
             $heldPacket = $null
+            $heldPort = 0
         }
         if (-not $NoPacing) {
             Start-Sleep -Milliseconds ([Math]::Max(1, [int][Math]::Round($packetDurationMilliseconds)))
         }
     }
     if ($null -ne $heldPacket) {
-        [void]$udpClient.Send($heldPacket, $heldPacket.Length, $DestinationAddress, $Port)
+        [void]$udpClient.Send($heldPacket, $heldPacket.Length, $DestinationAddress, $heldPort)
         ++$sentPackets
     }
 } finally {
     $udpClient.Dispose()
 }
 
-Write-Output "sent=$sentPackets dropped=$droppedPackets duplicated=$duplicatedPackets destination=${DestinationAddress}:$Port"
+Write-Output "sent=$sentPackets dropped=$droppedPackets duplicated=$duplicatedPackets retransmitted=$retransmittedPackets destination=${DestinationAddress}:$Port"

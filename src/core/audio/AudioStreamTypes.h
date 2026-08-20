@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "core/audio/AudioTypes.h"
@@ -54,6 +55,7 @@ struct DecodedAudioFrameView final {
     std::uint32_t frame_count{0U};
     std::uint32_t rtp_timestamp{0U};
     std::uint64_t extended_sequence_number{0U};
+    std::optional<std::int64_t> target_qpc{};
     bool concealed{false};
 };
 

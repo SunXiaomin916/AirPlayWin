@@ -20,6 +20,7 @@ void TestSdpAndTransport();
 void TestSessionManager();
 void TestSignalGenerator();
 void TestWindowsDiscovery();
+void TestWindowsAudioStreamIntegration();
 void TestWindowsPlatform();
 
 namespace {
@@ -62,6 +63,7 @@ int main() {
     failed += Run("IocpUdpReceiver", &TestIocpUdpReceiver) ? 0 : 1;
     failed += Run("Discovery", &TestDiscovery) ? 0 : 1;
     failed += Run("WindowsDiscovery", &TestWindowsDiscovery) ? 0 : 1;
+    failed += Run("WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration) ? 0 : 1;
     failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
     return failed == 0 ? 0 : 1;
 }

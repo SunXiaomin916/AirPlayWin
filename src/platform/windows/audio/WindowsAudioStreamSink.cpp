@@ -12,6 +12,12 @@ WindowsAudioStreamSink::WindowsAudioStreamSink(WasapiOutputOptions options,
     : engine_(std::move(options)),
       prefill_milliseconds_(std::clamp(prefill_milliseconds, 5U, 500U)) {}
 
+WindowsAudioStreamSink::WindowsAudioStreamSink(
+    std::unique_ptr<airplaywin::audio::IAudioOutput> output,
+    const std::uint32_t prefill_milliseconds)
+    : engine_(std::move(output)),
+      prefill_milliseconds_(std::clamp(prefill_milliseconds, 5U, 500U)) {}
+
 bool WindowsAudioStreamSink::Configure(const airplaywin::audio::AudioFormat& format) {
     if (!format.IsValid()) {
         return false;
@@ -53,7 +59,7 @@ bool WindowsAudioStreamSink::Submit(
         return false;
     }
     if (!engine_.Submit(frame.interleaved_samples, frame.frame_count,
-                        windows::timing::QpcClock::Now())) {
+                        frame.target_qpc.value_or(windows::timing::QpcClock::Now()))) {
         rejected_frames_ += frame.frame_count;
         return false;
     }

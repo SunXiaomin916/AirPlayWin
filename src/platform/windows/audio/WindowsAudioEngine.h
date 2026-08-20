@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
 
 #include "core/audio/AudioEngine.h"
@@ -12,6 +13,8 @@ namespace airplaywin::windows::audio {
 class WindowsAudioEngine final {
 public:
     explicit WindowsAudioEngine(WasapiOutputOptions options = {});
+    explicit WindowsAudioEngine(
+        std::unique_ptr<airplaywin::audio::IAudioOutput> output);
 
     [[nodiscard]] bool Open(const airplaywin::audio::AudioFormat& format);
     [[nodiscard]] bool Start();

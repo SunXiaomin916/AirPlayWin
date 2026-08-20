@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "core/protocol/RtspResponseBuilder.h"
+#include "core/protocol/RtpInfo.h"
 #include "core/protocol/RtspTransport.h"
 #include "core/protocol/SdpAudioParser.h"
 
@@ -53,19 +54,91 @@ namespace {
 }
 
 [[nodiscard]] std::optional<double> ParseVolume(const std::string_view body) noexcept {
-    const auto colon = body.find(':');
-    if (colon == std::string_view::npos ||
-        !EqualsAsciiCaseInsensitive(Trim(body.substr(0U, colon)), "volume")) {
-        return std::nullopt;
-    }
-    const auto value = Trim(body.substr(colon + 1U));
-    double volume = 0.0;
-    const auto result = std::from_chars(value.data(), value.data() + value.size(), volume);
-    if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
-        !std::isfinite(volume) || volume < -144.0 || volume > 0.0) {
-        return std::nullopt;
+    std::optional<double> volume;
+    std::size_t offset = 0U;
+    while (offset <= body.size()) {
+        const auto line_end = body.find('\n', offset);
+        const auto line = Trim(body.substr(
+            offset, line_end == std::string_view::npos ? std::string_view::npos
+                                                       : line_end - offset));
+        const auto colon = line.find(':');
+        if (colon != std::string_view::npos &&
+            EqualsAsciiCaseInsensitive(Trim(line.substr(0U, colon)), "volume")) {
+            if (volume.has_value()) {
+                return std::nullopt;
+            }
+            const auto value = Trim(line.substr(colon + 1U));
+            double parsed = 0.0;
+            const auto result =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+                !std::isfinite(parsed) || parsed < -144.0 || parsed > 0.0) {
+                return std::nullopt;
+            }
+            volume = parsed;
+        }
+        if (line_end == std::string_view::npos) {
+            break;
+        }
+        offset = line_end + 1U;
     }
     return volume;
+}
+
+[[nodiscard]] bool RequestsVolume(const std::string_view body) noexcept {
+    std::size_t offset = 0U;
+    while (offset <= body.size()) {
+        const auto line_end = body.find('\n', offset);
+        const auto line = Trim(body.substr(
+            offset, line_end == std::string_view::npos ? std::string_view::npos
+                                                       : line_end - offset));
+        if (EqualsAsciiCaseInsensitive(line, "volume")) {
+            return true;
+        }
+        if (line_end == std::string_view::npos) {
+            break;
+        }
+        offset = line_end + 1U;
+    }
+    return false;
+}
+
+[[nodiscard]] std::string VolumeBody(const double volume_db) {
+    std::array<char, 64U> storage{};
+    constexpr std::string_view prefix{"volume: "};
+    std::copy(prefix.begin(), prefix.end(), storage.begin());
+    const auto result = std::to_chars(storage.data() + prefix.size(), storage.data() + 62U,
+                                      volume_db, std::chars_format::fixed, 6);
+    if (result.ec != std::errc{}) {
+        return {};
+    }
+    *result.ptr = '\r';
+    *(result.ptr + 1) = '\n';
+    return {storage.data(), static_cast<std::size_t>(result.ptr + 2 - storage.data())};
+}
+
+[[nodiscard]] bool ParseOptionalRtpInfo(
+    const Request& request,
+    transport::AudioTimelineAnchor& anchor) noexcept {
+    std::optional<std::string_view> value;
+    for (const auto& header : request.headers) {
+        if (EqualsAsciiCaseInsensitive(header.name, "RTP-Info")) {
+            if (value.has_value()) {
+                return false;
+            }
+            value = header.value;
+        }
+    }
+    if (!value.has_value()) {
+        anchor = {};
+        return true;
+    }
+    const auto parsed = ParseRtpInfo(*value);
+    if (!parsed.has_value()) {
+        return false;
+    }
+    anchor = *parsed;
+    return true;
 }
 
 [[nodiscard]] bool HasValidCSeq(const Request& request) noexcept {
@@ -226,7 +299,24 @@ transport::ControlReply AirPlayControlService::HandleRequest(
             }
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "GET_PARAMETER")) {
-        reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+        if (request.body.empty()) {
+            reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+        } else {
+            const auto content_type = request.HeaderValue("Content-Type");
+            const auto session_snapshot = sessions_.Get(connection_id);
+            if (!content_type.has_value() ||
+                !EqualsAsciiCaseInsensitive(*content_type, "text/parameters") ||
+                !RequestsVolume(request.BodyText()) || !session_snapshot.has_value()) {
+                ++rejected_requests_;
+                reply.writes.push_back(
+                    StatusResponse(request, 451, "Invalid Parameter", {}, {}, close));
+            } else {
+                const auto body = VolumeBody(session_snapshot->volume_db);
+                const std::array headers{Header{"Content-Type", "text/parameters"}};
+                reply.writes.push_back(
+                    StatusResponse(request, 200, "OK", headers, body, close));
+            }
+        }
     } else if (EqualsAsciiCaseInsensitive(request.method, "SET_PARAMETER")) {
         const auto content_type = request.HeaderValue("Content-Type");
         const auto volume = content_type.has_value() &&
@@ -319,16 +409,21 @@ transport::ControlReply AirPlayControlService::HandleRequest(
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "RECORD")) {
         const auto session_snapshot = sessions_.Get(connection_id);
+        transport::AudioTimelineAnchor anchor;
         if (audio_transport_ == nullptr || !session_snapshot.has_value() ||
             (session_snapshot->state != session::SessionState::Ready &&
              session_snapshot->state != session::SessionState::Paused)) {
             ++rejected_requests_;
             reply.writes.push_back(StatusResponse(
                 request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else if (!ParseOptionalRtpInfo(request, anchor)) {
+            ++rejected_requests_;
+            reply.writes.push_back(
+                StatusResponse(request, 400, "Bad Request", {}, {}, close));
         } else {
             const bool started = session_snapshot->state == session::SessionState::Paused
-                                     ? audio_transport_->Resume(connection_id)
-                                     : audio_transport_->Record(connection_id);
+                                     ? audio_transport_->Resume(connection_id, anchor)
+                                     : audio_transport_->Record(connection_id, anchor);
             if (!started) {
                 ++rejected_requests_;
                 reply.writes.push_back(
@@ -336,7 +431,9 @@ transport::ControlReply AirPlayControlService::HandleRequest(
             } else {
                 static_cast<void>(
                     sessions_.SetState(connection_id, session::SessionState::Streaming));
-                reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+                const std::array headers{Header{"Audio-Latency", "11025"}};
+                reply.writes.push_back(
+                    StatusResponse(request, 200, "OK", headers, {}, close));
             }
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "PAUSE")) {
@@ -353,14 +450,22 @@ transport::ControlReply AirPlayControlService::HandleRequest(
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "FLUSH")) {
         const auto session_snapshot = sessions_.Get(connection_id);
+        transport::AudioTimelineAnchor anchor;
         if (audio_transport_ == nullptr || !session_snapshot.has_value() ||
             (session_snapshot->state != session::SessionState::Ready &&
              session_snapshot->state != session::SessionState::Streaming &&
-             session_snapshot->state != session::SessionState::Paused) ||
-            !audio_transport_->Flush(connection_id)) {
+             session_snapshot->state != session::SessionState::Paused)) {
             ++rejected_requests_;
             reply.writes.push_back(StatusResponse(
                 request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else if (!ParseOptionalRtpInfo(request, anchor)) {
+            ++rejected_requests_;
+            reply.writes.push_back(
+                StatusResponse(request, 400, "Bad Request", {}, {}, close));
+        } else if (!audio_transport_->Flush(connection_id, anchor)) {
+            ++rejected_requests_;
+            reply.writes.push_back(
+                StatusResponse(request, 500, "Internal Server Error", {}, {}, close));
         } else {
             reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
         }

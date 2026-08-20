@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 #include "core/audio/IAudioFrameSink.h"
@@ -21,6 +22,9 @@ class WindowsAudioStreamSink final : public airplaywin::audio::IAudioFrameSink {
 public:
     explicit WindowsAudioStreamSink(WasapiOutputOptions options = {},
                                     std::uint32_t prefill_milliseconds = 20U);
+    explicit WindowsAudioStreamSink(
+        std::unique_ptr<airplaywin::audio::IAudioOutput> output,
+        std::uint32_t prefill_milliseconds = 20U);
 
     [[nodiscard]] bool Configure(const airplaywin::audio::AudioFormat& format) override;
     [[nodiscard]] bool Start() override;

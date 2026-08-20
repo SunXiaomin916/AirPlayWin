@@ -1,9 +1,10 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 4
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 5
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
-control sessions, and a runnable unencrypted RTP/L16 transport milestone. Pairing, Apple codec
-decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
+control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
+timeline integration. Pairing, Apple codec decoding, encryption, PTP, multi-room, and WinUI
+are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -65,6 +66,23 @@ decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
 - `IAudioFrameSink` keeps decoded PCM behind `WindowsAudioStreamSink`, so protocol/transport
   code cannot bypass `AudioEngine`, audio epochs, or `AudioTransitionGuard`.
 - Deterministic L16 packet replay/fault injection and end-to-end RTSP-to-UDP-to-decoder tests.
+
+## Phase 5 capabilities
+
+- Strict single-stream `RTP-Info` parsing for optional `seq` and `rtptime` anchors on RECORD,
+  resumed RECORD, and FLUSH.
+- Wrap-aware sequence/timestamp gates reject pre-boundary packets before jitter-buffer entry;
+  FLUSH and an anchored resume reset decoder history and create a new AudioEngine epoch.
+- Classic four-byte retransmitted-audio wrappers are accepted on the negotiated control port,
+  unwrapped, and passed through the normal RTP/SSRC/payload/timeline checks.
+- RECORD returns `Audio-Latency: 11025` for the classic L16 development profile.
+- `text/parameters` volume supports multiline SET and query GET; changes remain sample-ramped
+  at the bottom audio transition guard.
+- Decoded frames carry an optional target QPC scheduling field. Phase 5 uses arrival QPC while
+  the deferred timing engine will populate an actual sender-clock mapping.
+- The platform composition boundary is dependency-injectable for tests. A full automated path
+  now crosses RTP -> L16 decode -> WindowsAudioStreamSink -> WindowsAudioEngine -> AudioEngine
+  -> IAudioOutput and verifies epoch, pause/resume, flush, volume, and stale-timeline rejection.
 
 ## Architecture
 
@@ -209,7 +227,8 @@ After an L16 SDP `ANNOUNCE` and UDP `SETUP`, the process accepts RTP on its nego
 default endpoint. The process prints control, RTP, jitter-buffer, decoder, and WASAPI metrics.
 `--raop-port` and `--airplay-port` override the control ports.
 
-The deterministic sender can inject normal, lost, duplicate, and reordered L16 packets:
+The deterministic sender can inject normal, lost, duplicate, reordered, timeline-anchored,
+and retransmission-wrapped L16 packets:
 
 ```powershell
 .\tools\packet_replay\rtp_l16_replay.ps1 -Port <negotiated-server-port> `
@@ -250,9 +269,20 @@ duplicate/sequence-wrap behavior, SDP and transport negotiation, L16 decoding an
 concealment, stream-worker continuity, a real IOCP UDP loopback receiver, and an end-to-end
 RTSP `ANNOUNCE -> SETUP -> RECORD -> RTP -> FLUSH/PAUSE/TEARDOWN` path.
 
+Phase 5 adds strict RTP-Info parser cases, wrap-aware stale-timeline rejection, inbound
+retransmission-wrapper delivery through the real control UDP port, multiline volume SET/GET,
+RECORD latency response checks, and a concrete RTP-to-AudioEngine epoch integration test.
+
 A local phase 4 application smoke received five 200 responses for `ANNOUNCE`, `SETUP`,
 `RECORD`, `FLUSH`, and `TEARDOWN`; negotiated an ephemeral audio UDP port; and replayed 63
 datagrams with three deterministic drops and two duplicates before clean server shutdown.
+
+The phase 5 verification added a zero-warning Debug/Release build, passing Debug/Release
+CTest, and 20 consecutive Debug suite runs. A local application smoke completed nine 200
+responses across `ANNOUNCE`, `SETUP`, anchored `RECORD`, multiline volume SET/GET, `PAUSE`,
+anchored resume, anchored `FLUSH`, and `TEARDOWN`. Three replay batches delivered 36 L16
+packets/12,672 frames, including six retransmission-wrapped packets routed through the control
+port; the server reported zero parse/transport errors and zero WASAPI underruns.
 
 ## Current boundary
 
@@ -261,12 +291,12 @@ with the Windows audio engine's shared-mode format converter. Exclusive mode and
 `IAudioClient3` minimum-period tuning remain later audio-backend work.
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
-absent pairing, crypto, PTP, or Apple codec modules. Phase 4 accepts an unencrypted RTP/L16
-development profile and reserves/counts control and timing UDP ports, but it does not yet
-implement retransmission control, timing replies, or PTP. Current Apple senders normally need
-the deferred pairing, encryption, codec, and timing work; physical iPhone/iPad/Mac
-interoperability is therefore not claimed in this phase.
+absent pairing, crypto, PTP, or Apple codec modules. Phase 5 accepts inbound retransmitted
+audio on the control port, but it does not originate resend requests or implement timing
+replies/PTP. Current Apple senders normally need the deferred pairing, encryption, codec, and
+timing work; physical iPhone/iPad/Mac interoperability is therefore not claimed in this phase.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
-[phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries.
+[phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries, and
+[phase 5](docs/phase-5.md) for AudioEngine/timeline/control integration.

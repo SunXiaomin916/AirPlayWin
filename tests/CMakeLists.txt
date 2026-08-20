@@ -18,6 +18,7 @@ add_executable(airplaywin_tests
     TestSessionManager.cpp
     TestSignalGenerator.cpp
     TestWindowsDiscovery.cpp
+    TestWindowsAudioStreamIntegration.cpp
     TestWindowsPlatform.cpp
 )
 
