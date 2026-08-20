@@ -7,6 +7,7 @@
 #include <span>
 
 #include "core/audio/AudioTypes.h"
+#include "core/audio/ClickPopDetector.h"
 
 namespace airplaywin::audio {
 
@@ -18,6 +19,7 @@ struct AudioTransitionConfig final {
     float prewarm_milliseconds{10.0F};
     float maximum_pcm_amplitude{1.0F};
     float dc_offset_threshold{0.15F};
+    float click_pop_step_threshold{0.35F};
 };
 
 class AudioTransitionGuard final {
@@ -39,11 +41,19 @@ public:
     [[nodiscard]] std::uint64_t InvalidNumericSamples() const noexcept;
     [[nodiscard]] std::uint64_t ClippedSamples() const noexcept;
     [[nodiscard]] std::uint64_t DcOffsetEvents() const noexcept;
+    [[nodiscard]] std::uint64_t TransitionRequests() const noexcept;
+    [[nodiscard]] std::uint64_t FadeInEvents() const noexcept;
+    [[nodiscard]] std::uint64_t FadeOutEvents() const noexcept;
+    [[nodiscard]] std::uint64_t SafeMuteEvents() const noexcept;
+    [[nodiscard]] std::uint64_t HardResyncEvents() const noexcept;
+    [[nodiscard]] std::uint64_t UnderrunTransitionEvents() const noexcept;
+    [[nodiscard]] ClickPopDiagnostics ClickPop() const noexcept;
 
 private:
     [[nodiscard]] static std::uint32_t MillisecondsToFrames(float milliseconds,
                                                             std::uint32_t sample_rate) noexcept;
     [[nodiscard]] static float SmoothStep(float value) noexcept;
+    [[nodiscard]] static std::uint8_t CommandPriority(AudioTransition transition) noexcept;
     void ApplyPendingCommand() noexcept;
     void BeginFadeOut(AudioTransition reason) noexcept;
     void CompleteFadeOut() noexcept;
@@ -55,6 +65,7 @@ private:
     const std::uint32_t fade_out_frames_;
     const std::uint32_t volume_ramp_frames_;
     const std::uint32_t prewarm_frames_;
+    ClickPopDetector click_pop_detector_;
 
     std::atomic<AudioTransition> pending_command_{AudioTransition::None};
     std::atomic<AudioTransitionState> public_state_{AudioTransitionState::Stopped};
@@ -62,9 +73,16 @@ private:
     std::atomic<std::uint64_t> invalid_numeric_samples_{0U};
     std::atomic<std::uint64_t> clipped_samples_{0U};
     std::atomic<std::uint64_t> dc_offset_events_{0U};
+    std::atomic<std::uint64_t> transition_requests_{0U};
+    std::atomic<std::uint64_t> fade_in_events_{0U};
+    std::atomic<std::uint64_t> fade_out_events_{0U};
+    std::atomic<std::uint64_t> safe_mute_events_{0U};
+    std::atomic<std::uint64_t> hard_resync_events_{0U};
+    std::atomic<std::uint64_t> underrun_transition_events_{0U};
 
     AudioTransitionState render_state_{AudioTransitionState::Stopped};
     AudioTransition fade_out_reason_{AudioTransition::None};
+    bool restart_after_fade_out_{false};
     std::uint32_t transition_frames_remaining_{0U};
     float current_volume_{1.0F};
     float cached_target_volume_{1.0F};

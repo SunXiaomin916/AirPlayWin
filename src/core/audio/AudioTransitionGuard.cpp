@@ -12,25 +12,41 @@ AudioTransitionGuard::AudioTransitionGuard(const AudioTransitionConfig& config)
       fade_out_frames_(MillisecondsToFrames(config.fade_out_milliseconds, config.sample_rate)),
       volume_ramp_frames_(
           MillisecondsToFrames(config.volume_ramp_milliseconds, config.sample_rate)),
-      prewarm_frames_(MillisecondsToFrames(config.prewarm_milliseconds, config.sample_rate)) {
+      prewarm_frames_(MillisecondsToFrames(config.prewarm_milliseconds, config.sample_rate)),
+      click_pop_detector_(
+          ClickPopDetectorConfig{.maximum_sample_step = config.click_pop_step_threshold}) {
     if (config.sample_rate == 0U || config.maximum_pcm_amplitude <= 0.0F ||
-        config.maximum_pcm_amplitude > 1.0F || config.dc_offset_threshold <= 0.0F) {
+        config.maximum_pcm_amplitude > 1.0F || config.dc_offset_threshold <= 0.0F ||
+        !std::isfinite(config.dc_offset_threshold)) {
         throw std::invalid_argument("Invalid AudioTransitionConfig");
     }
 }
 
 void AudioTransitionGuard::Request(const AudioTransition transition) noexcept {
-    if (transition != AudioTransition::None) {
-        if ((transition == AudioTransition::Start || transition == AudioTransition::Resume) &&
-            pending_command_.load(std::memory_order_acquire) == AudioTransition::None) {
-            const auto state = State();
-            if (state == AudioTransitionState::Prewarming ||
-                state == AudioTransitionState::FadingIn ||
-                state == AudioTransitionState::Audible) {
-                return;
-            }
+    if (transition == AudioTransition::None) {
+        return;
+    }
+    transition_requests_.fetch_add(1U, std::memory_order_relaxed);
+    if (transition == AudioTransition::HardResync) {
+        hard_resync_events_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if ((transition == AudioTransition::Start || transition == AudioTransition::Resume) &&
+        pending_command_.load(std::memory_order_acquire) == AudioTransition::None) {
+        const auto state = State();
+        if (state == AudioTransitionState::Prewarming ||
+            state == AudioTransitionState::FadingIn ||
+            state == AudioTransitionState::Audible) {
+            return;
         }
-        pending_command_.store(transition, std::memory_order_release);
+    }
+
+    auto pending = pending_command_.load(std::memory_order_acquire);
+    while (CommandPriority(transition) > CommandPriority(pending)) {
+        if (pending_command_.compare_exchange_weak(
+                pending, transition, std::memory_order_release,
+                std::memory_order_acquire)) {
+            return;
+        }
     }
 }
 
@@ -53,6 +69,7 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
     ApplyPendingCommand();
     if (underrun && (render_state_ == AudioTransitionState::Audible ||
                      render_state_ == AudioTransitionState::FadingIn)) {
+        underrun_transition_events_.fetch_add(1U, std::memory_order_relaxed);
         BeginFadeOut(AudioTransition::None);
     }
 
@@ -118,6 +135,7 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
             if (transition_frames_remaining_ == 0U) {
                 render_state_ = AudioTransitionState::FadingIn;
                 transition_frames_remaining_ = fade_in_frames_;
+                fade_in_events_.fetch_add(1U, std::memory_order_relaxed);
             }
         } else if (render_state_ == AudioTransitionState::FadingIn) {
             if (transition_frames_remaining_ > 0U) {
@@ -136,6 +154,8 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
         }
     }
 
+    click_pop_detector_.Process(interleaved_samples.first(required_samples), frame_count,
+                                channel_count);
     public_state_.store(render_state_, std::memory_order_release);
 }
 
@@ -170,6 +190,34 @@ std::uint64_t AudioTransitionGuard::DcOffsetEvents() const noexcept {
     return dc_offset_events_.load(std::memory_order_relaxed);
 }
 
+std::uint64_t AudioTransitionGuard::TransitionRequests() const noexcept {
+    return transition_requests_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AudioTransitionGuard::FadeInEvents() const noexcept {
+    return fade_in_events_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AudioTransitionGuard::FadeOutEvents() const noexcept {
+    return fade_out_events_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AudioTransitionGuard::SafeMuteEvents() const noexcept {
+    return safe_mute_events_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AudioTransitionGuard::HardResyncEvents() const noexcept {
+    return hard_resync_events_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t AudioTransitionGuard::UnderrunTransitionEvents() const noexcept {
+    return underrun_transition_events_.load(std::memory_order_relaxed);
+}
+
+ClickPopDiagnostics AudioTransitionGuard::ClickPop() const noexcept {
+    return click_pop_detector_.Diagnostics();
+}
+
 std::uint32_t AudioTransitionGuard::MillisecondsToFrames(const float milliseconds,
                                                          const std::uint32_t sample_rate) noexcept {
     if (!std::isfinite(milliseconds) || milliseconds <= 0.0F || sample_rate == 0U) {
@@ -185,12 +233,39 @@ float AudioTransitionGuard::SmoothStep(const float value) noexcept {
     return x * x * (3.0F - 2.0F * x);
 }
 
+std::uint8_t AudioTransitionGuard::CommandPriority(
+    const AudioTransition transition) noexcept {
+    switch (transition) {
+    case AudioTransition::None:
+        return 0U;
+    case AudioTransition::Start:
+    case AudioTransition::Resume:
+        return 1U;
+    case AudioTransition::Pause:
+        return 2U;
+    case AudioTransition::Stop:
+        return 3U;
+    case AudioTransition::Flush:
+    case AudioTransition::Seek:
+        return 4U;
+    case AudioTransition::HardResync:
+        return 5U;
+    case AudioTransition::DeviceSwitch:
+        return 6U;
+    }
+    return 0U;
+}
+
 void AudioTransitionGuard::ApplyPendingCommand() noexcept {
     const auto command = pending_command_.exchange(AudioTransition::None, std::memory_order_acq_rel);
     switch (command) {
     case AudioTransition::Start:
     case AudioTransition::Resume:
-        BeginPrewarm();
+        if (render_state_ == AudioTransitionState::FadingOut) {
+            restart_after_fade_out_ = true;
+        } else {
+            BeginPrewarm();
+        }
         break;
     case AudioTransition::Stop:
     case AudioTransition::Pause:
@@ -206,14 +281,19 @@ void AudioTransitionGuard::ApplyPendingCommand() noexcept {
 }
 
 void AudioTransitionGuard::BeginFadeOut(const AudioTransition reason) noexcept {
+    restart_after_fade_out_ = false;
     fade_out_reason_ = reason;
     fade_tail_ = last_output_;
     transition_frames_remaining_ = fade_out_frames_;
     render_state_ = AudioTransitionState::FadingOut;
+    fade_out_events_.fetch_add(1U, std::memory_order_relaxed);
 }
 
 void AudioTransitionGuard::CompleteFadeOut() noexcept {
-    switch (fade_out_reason_) {
+    const auto completed_reason = fade_out_reason_;
+    const auto restart = restart_after_fade_out_;
+    restart_after_fade_out_ = false;
+    switch (completed_reason) {
     case AudioTransition::Stop:
         render_state_ = AudioTransitionState::Stopped;
         break;
@@ -227,9 +307,11 @@ void AudioTransitionGuard::CompleteFadeOut() noexcept {
     case AudioTransition::Seek:
     case AudioTransition::HardResync:
         render_state_ = AudioTransitionState::SafeMute;
+        safe_mute_events_.fetch_add(1U, std::memory_order_relaxed);
         break;
     case AudioTransition::None:
         render_state_ = AudioTransitionState::SafeMute;
+        safe_mute_events_.fetch_add(1U, std::memory_order_relaxed);
         break;
     case AudioTransition::Start:
     case AudioTransition::Resume:
@@ -237,6 +319,9 @@ void AudioTransitionGuard::CompleteFadeOut() noexcept {
         break;
     }
     fade_out_reason_ = AudioTransition::None;
+    if (restart && completed_reason != AudioTransition::DeviceSwitch) {
+        BeginPrewarm();
+    }
 }
 
 void AudioTransitionGuard::BeginPrewarm() noexcept {

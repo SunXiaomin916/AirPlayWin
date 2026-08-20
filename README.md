@@ -1,11 +1,12 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 7
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 8
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
 timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
-buffered RTP-to-QPC timing experiment. Pairing, Apple codec decoding, encryption, PTP,
-multi-room, and WinUI are not implemented yet.
+buffered RTP-to-QPC timing experiment. Phase 8 formalizes the bottom anti-pop path with an
+automatic waveform-discontinuity detector and 1,000-cycle regression harness. Pairing, Apple
+codec decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -116,6 +117,22 @@ multi-room, and WinUI are not implemented yet.
 - Timing lock, target buffer, mapped/late counts, maximum lateness, scheduled frames, wait time,
   and last target QPC are observable in runtime diagnostics.
 
+## Phase 8 capabilities
+
+- A fixed-storage `ClickPopDetector` runs after the final transition gate and measures
+  inter-frame output steps without allocating or locking on the render thread.
+- Runtime diagnostics expose analyzed frames, threshold-crossing events, maximum/recent output
+  step, transition requests, fade-in/out, SAFE_MUTE, hard-resync, and underrun-transition counts.
+- Safety commands are priority-merged so a pending flush, hard resync, or device switch cannot
+  be overwritten by a racing start/resume command.
+- Start/resume received during a fade-out is deferred until the old tail reaches zero; device
+  switches remain muted until the rebuilt endpoint explicitly starts its new prewarm path.
+- The automated anti-pop harness runs 1,000 transitions over a continuous 48 kHz stereo sine,
+  including stop, pause, flush, seek, hard resync, device switch, underrun, volume steps, and
+  deliberate phase jumps after timeline changes.
+- Epoch regression now cycles every required timeline-change reason 1,000 times and verifies
+  that the previous epoch immediately becomes stale.
+
 ## Architecture
 
 ```text
@@ -141,6 +158,7 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
  windows::audio::WasapiAudioOutput
        | fixed SPSC ring
        | AudioTransitionGuard (unskippable render gate)
+       | ClickPopDetector (post-gate, fixed storage)
        v
  WASAPI shared/event-driven endpoint
 ```
@@ -206,7 +224,7 @@ ctest --preset debug
 Warnings are compiled as errors (`/W4 /WX`). No third-party packages are required in the
 current phases.
 
-Create the phase 7 x64 experimental beta ZIP after the Release build:
+Create the phase 8 x64 beta ZIP after the Release build:
 
 ```powershell
 cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
@@ -244,7 +262,7 @@ Run a 30-minute local soak:
 Run 100 combined start/stop, pause/resume, flush, and volume-ramp cycles:
 
 ```powershell
-.\build\vs2022-x64\Debug\AirPlayWin.exe --play --signal 440 --transition-cycles 100
+.\build\vs2022-x64\Debug\AirPlayWin.exe --play --signal 440 --transition-cycles 1000
 ```
 
 During a default-device run, changing the Windows default render endpoint causes a guarded fade/mute, endpoint rebuild, silent prewarm, and fade-in. A selected USB DAC is retried once per second after removal until the same endpoint ID becomes available again.
@@ -389,6 +407,26 @@ work rather than a latency guarantee.
 CPack generated `AirPlayWin-0.7.0-windows-x64.zip`, and the executable, installer scripts, and
 documentation entries were inspected in the archive.
 
+Phase 8 adds the post-gate click/pop detector, safety-command priority tests, deferred restart
+coverage, all-reason epoch cycling, and a 1,000-cycle 48 kHz waveform regression. The synthetic
+stress path analyzes 1,920,720 stereo frames while rotating stop, pause, flush, seek, hard
+resync, device switch, underrun, volume steps, and discontinuous post-reset source phases. It
+completed with zero threshold crossings at the stricter 0.20 full-scale step threshold.
+
+Debug and Release x64 builds passed with `/W4 /WX`; all 25 test modules passed in both
+configurations. A 50-run Release regression initially exposed a pause/worker race in which a
+packet queued during pause could be popped after the sink was gated but before resume. The worker
+now rechecks running/recording state under the transition serialization lock, and the complete
+Release suite subsequently passed 50/50 runs in 47.68 seconds.
+
+The real Release WASAPI probe completed 1,000 silent transition cycles with 10,737,153 rendered
+frames, epoch 1 -> 1,001, 250 hard resyncs, zero click/pop threshold events, zero stale epochs,
+and zero numeric/clipping/DC events. Thirty-one underruns were observed during
+the deliberately aggressive loop, and all 31 entered the guarded underrun transition path. The
+tested endpoint reported an approximately 23 ms latency estimate and the process exited normally.
+CPack generated `AirPlayWin-0.8.0-windows-x64.zip`; the Release executable, installer scripts,
+installer guide, and project README entries were inspected in the archive.
+
 ## Current boundary
 
 Shared mode remains the only enabled WASAPI mode. The backend uses the application format
@@ -397,9 +435,10 @@ with the Windows audio engine's shared-mode format converter. Exclusive mode and
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
 absent pairing, crypto, PTP, or Apple codec modules. Phase 7 adds only a local single-stream
-buffered timing experiment and does not expand advertised media/security capabilities. Phase 5 accepts
-inbound retransmitted audio on the control port, but it does not originate resend requests or
-implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
+buffered timing experiment and does not expand advertised media/security capabilities. Phase 8
+adds output-safety validation only and likewise changes no advertised protocol capability.
+Phase 5 accepts inbound retransmitted audio on the control port, but it does not originate resend
+requests or implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
 encryption, codec, and timing work; physical iPhone/iPad/Mac interoperability is therefore not
 claimed in this phase.
 
@@ -408,4 +447,5 @@ See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) 
 [phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries, and
 [phase 5](docs/phase-5.md) for AudioEngine/timeline/control integration, and
 [phase 6](docs/phase-6.md) for lifecycle recovery, diagnostics, and beta deployment, and
-[phase 7](docs/phase-7.md) for the buffered RTP-to-QPC timing experiment.
+[phase 7](docs/phase-7.md) for the buffered RTP-to-QPC timing experiment, and
+[phase 8](docs/phase-8.md) for anti-pop invariants and waveform regression.

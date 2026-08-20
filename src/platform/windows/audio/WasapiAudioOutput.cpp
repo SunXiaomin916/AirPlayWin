@@ -315,6 +315,8 @@ public:
     }
 
     [[nodiscard]] airplaywin::audio::AudioDiagnosticsSnapshot Diagnostics() const {
+        const auto click_pop = guard_ != nullptr ? guard_->ClickPop()
+                                                 : airplaywin::audio::ClickPopDiagnostics{};
         airplaywin::audio::AudioDiagnosticsSnapshot snapshot{
             .current_buffer_depth_frames =
                 current_buffer_depth_frames_.load(std::memory_order_relaxed),
@@ -324,6 +326,18 @@ public:
             .invalid_numeric_samples = guard_ != nullptr ? guard_->InvalidNumericSamples() : 0U,
             .clipped_samples = guard_ != nullptr ? guard_->ClippedSamples() : 0U,
             .dc_offset_events = guard_ != nullptr ? guard_->DcOffsetEvents() : 0U,
+            .transition_requests = guard_ != nullptr ? guard_->TransitionRequests() : 0U,
+            .fade_in_events = guard_ != nullptr ? guard_->FadeInEvents() : 0U,
+            .fade_out_events = guard_ != nullptr ? guard_->FadeOutEvents() : 0U,
+            .safe_mute_events = guard_ != nullptr ? guard_->SafeMuteEvents() : 0U,
+            .hard_resync_events = guard_ != nullptr ? guard_->HardResyncEvents() : 0U,
+            .underrun_transition_events =
+                guard_ != nullptr ? guard_->UnderrunTransitionEvents() : 0U,
+            .click_pop_analyzed_frames = click_pop.analyzed_frames,
+            .click_pop_events = click_pop.transient_events,
+            .click_pop_last_event_frame = click_pop.last_event_frame,
+            .click_pop_maximum_step = click_pop.maximum_sample_step,
+            .click_pop_recent_peak = click_pop.recent_peak_step,
             .output_latency_microseconds =
                 output_latency_microseconds_.load(std::memory_order_relaxed),
             .device_switch_events = device_switch_events_.load(std::memory_order_relaxed),

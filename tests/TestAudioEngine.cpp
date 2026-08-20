@@ -92,6 +92,23 @@ void TestAudioEngine() {
     engine.HardResync();
     APW_EXPECT(engine.CurrentEpoch() == 3U);
     APW_EXPECT(fake_observer->last_transition_ == AudioTransition::HardResync);
+    engine.Seek();
+    APW_EXPECT(engine.CurrentEpoch() == 4U);
+    APW_EXPECT(fake_observer->last_transition_ == AudioTransition::Seek);
+    engine.ReplaceSender();
+    APW_EXPECT(engine.CurrentEpoch() == 5U);
+    APW_EXPECT(fake_observer->last_transition_ == AudioTransition::Flush);
+    engine.ResetSession();
+    APW_EXPECT(engine.CurrentEpoch() == 6U);
+    APW_EXPECT(fake_observer->last_transition_ == AudioTransition::Flush);
+
+    const AudioFormat changed_format{.sample_rate = 44'100U, .channel_count = 1U};
+    APW_EXPECT(engine.ChangeFormat(changed_format));
+    APW_EXPECT(engine.CurrentEpoch() == 7U);
+    APW_EXPECT(fake_observer->format_.sample_rate == 44'100U);
+    APW_EXPECT(fake_observer->format_.channel_count == 1U);
+    APW_EXPECT(fake_observer->last_transition_ == AudioTransition::Start);
+    APW_EXPECT(!engine.Submit(stale_buffer));
     engine.SetVolume(0.25F);
     APW_EXPECT(fake_observer->volume_ == 0.25F);
     engine.Close();

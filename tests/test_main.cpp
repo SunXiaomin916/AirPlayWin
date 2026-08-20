@@ -3,11 +3,13 @@
 #include <string_view>
 
 void TestAudioEngine();
+void TestAntiPopStress();
 void TestAirPlayControlService();
 void TestAudioEpoch();
 void TestAudioRingBuffer();
 void TestAudioTransitionGuard();
 void TestBufferedTiming();
+void TestClickPopDetector();
 void TestDiscovery();
 void TestIocpTcpServer();
 void TestIocpUdpReceiver();
@@ -48,10 +50,12 @@ using TestFunction = void (*)();
 
 int main() {
     int failed = 0;
+    failed += Run("AntiPopStress", &TestAntiPopStress) ? 0 : 1;
     failed += Run("AudioEpoch", &TestAudioEpoch) ? 0 : 1;
     failed += Run("AudioRingBuffer", &TestAudioRingBuffer) ? 0 : 1;
     failed += Run("AudioTransitionGuard", &TestAudioTransitionGuard) ? 0 : 1;
     failed += Run("BufferedTiming", &TestBufferedTiming) ? 0 : 1;
+    failed += Run("ClickPopDetector", &TestClickPopDetector) ? 0 : 1;
     failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
     failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
     failed += Run("PcmL16Decoder", &TestPcmL16Decoder) ? 0 : 1;

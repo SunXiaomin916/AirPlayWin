@@ -80,6 +80,17 @@ struct AudioDiagnosticsSnapshot final {
     std::uint64_t invalid_numeric_samples{0};
     std::uint64_t clipped_samples{0};
     std::uint64_t dc_offset_events{0};
+    std::uint64_t transition_requests{0};
+    std::uint64_t fade_in_events{0};
+    std::uint64_t fade_out_events{0};
+    std::uint64_t safe_mute_events{0};
+    std::uint64_t hard_resync_events{0};
+    std::uint64_t underrun_transition_events{0};
+    std::uint64_t click_pop_analyzed_frames{0};
+    std::uint64_t click_pop_events{0};
+    std::uint64_t click_pop_last_event_frame{0};
+    float click_pop_maximum_step{0.0F};
+    float click_pop_recent_peak{0.0F};
     std::uint64_t output_latency_microseconds{0};
     std::uint64_t device_switch_events{0};
     std::uint64_t device_recovery_attempts{0};

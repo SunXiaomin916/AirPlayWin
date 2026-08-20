@@ -45,7 +45,10 @@ These checks require an actual Windows endpoint and therefore are run with `AirP
 - During default output playback, change the Windows default endpoint and verify recovery.
 - During selected USB DAC playback, remove the DAC, wait, reconnect it, and verify the same endpoint is reopened.
 
-Audible anti-pop acceptance should ultimately use loopback/external capture and an automated transient detector. Human listening is useful but is not a sufficient regression oracle.
+Phase 8 adds an in-process post-gate transient detector and a 1,000-cycle known-waveform
+regression. Loopback/external capture remains necessary for clicks created inside a driver or
+physical endpoint after WASAPI buffer submission. Human listening is useful but is not a
+sufficient regression oracle.
 
 ## Recorded phase-1 verification
 

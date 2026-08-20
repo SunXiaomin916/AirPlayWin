@@ -7,7 +7,7 @@ cmake --build --preset release --parallel
 cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
 ```
 
-Extract `AirPlayWin-0.7.0-windows-x64.zip`, open an Administrator PowerShell in the extracted
+Extract `AirPlayWin-0.8.0-windows-x64.zip`, open an Administrator PowerShell in the extracted
 folder, and run:
 
 ```powershell

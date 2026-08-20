@@ -52,6 +52,8 @@ void TestAudioTransitionGuard() {
     samples.fill(0.0F);
     guard.Process(samples, 10U, 2U, true);
     APW_EXPECT(guard.State() == AudioTransitionState::SafeMute);
+    APW_EXPECT(guard.UnderrunTransitionEvents() == 1U);
+    APW_EXPECT(guard.SafeMuteEvents() >= 1U);
 
     guard.Request(AudioTransition::HardResync);
     std::array<float, 40U> resync_samples{};
@@ -102,4 +104,44 @@ void TestAudioTransitionGuard() {
             process_stress_block();
         }
     }
+    const auto stress_click_pop = stress_guard.ClickPop();
+    APW_EXPECT(stress_click_pop.analyzed_frames >= 20'000U);
+    APW_EXPECT(stress_click_pop.transient_events == 0U);
+    APW_EXPECT(stress_click_pop.maximum_sample_step <= 0.25F);
+    APW_EXPECT(stress_guard.TransitionRequests() >= 2'001U);
+    APW_EXPECT(stress_guard.FadeInEvents() >= 1'001U);
+    APW_EXPECT(stress_guard.FadeOutEvents() == 1'000U);
+    APW_EXPECT(stress_guard.SafeMuteEvents() >= 499U);
+    APW_EXPECT(stress_guard.HardResyncEvents() >= 166U);
+
+    AudioTransitionGuard priority_guard{AudioTransitionConfig{
+        .sample_rate = 1'000U,
+        .fade_in_milliseconds = 5.0F,
+        .fade_out_milliseconds = 5.0F,
+        .volume_ramp_milliseconds = 5.0F,
+        .prewarm_milliseconds = 2.0F,
+        .maximum_pcm_amplitude = 1.0F,
+        .dc_offset_threshold = 0.5F,
+    }};
+    priority_guard.Request(AudioTransition::Start);
+    priority_guard.Request(AudioTransition::DeviceSwitch);
+    priority_guard.Request(AudioTransition::Resume);
+    std::array<float, 40U> priority_samples{};
+    priority_samples.fill(0.5F);
+    priority_guard.Process(priority_samples, 20U, 2U, false);
+    APW_EXPECT(priority_guard.State() == AudioTransitionState::DeviceMuted);
+
+    priority_guard.Request(AudioTransition::Start);
+    priority_samples.fill(0.5F);
+    priority_guard.Process(priority_samples, 20U, 2U, false);
+    APW_EXPECT(priority_guard.State() == AudioTransitionState::Audible);
+    priority_guard.Request(AudioTransition::Flush);
+    std::array<float, 2U> one_frame{0.5F, 0.5F};
+    priority_guard.Process(one_frame, 1U, 2U, false);
+    APW_EXPECT(priority_guard.State() == AudioTransitionState::FadingOut);
+    priority_guard.Request(AudioTransition::Resume);
+    priority_samples.fill(-0.5F);
+    priority_guard.Process(priority_samples, 20U, 2U, false);
+    APW_EXPECT(priority_guard.State() == AudioTransitionState::Audible);
+    APW_EXPECT(priority_guard.ClickPop().transient_events == 0U);
 }

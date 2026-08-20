@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.7.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.8.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -16,6 +16,7 @@ add_library(airplaywin_core STATIC
     src/core/audio/AudioEpoch.cpp
     src/core/audio/AudioRingBuffer.cpp
     src/core/audio/AudioTransitionGuard.cpp
+    src/core/audio/ClickPopDetector.cpp
     src/core/audio/PcmL16Decoder.cpp
     src/core/audio/TestSignalGenerator.cpp
     src/core/crypto/OpenSessionAuthenticator.cpp

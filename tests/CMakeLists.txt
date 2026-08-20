@@ -1,10 +1,12 @@
 add_executable(airplaywin_tests
     test_main.cpp
+    TestAntiPopStress.cpp
     TestAudioEngine.cpp
     TestAudioEpoch.cpp
     TestAudioRingBuffer.cpp
     TestAudioTransitionGuard.cpp
     TestBufferedTiming.cpp
+    TestClickPopDetector.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
     TestIocpTcpServer.cpp

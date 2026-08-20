@@ -13,6 +13,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -36,6 +37,7 @@
 namespace {
 
 using airplaywin::audio::AudioFormat;
+using airplaywin::audio::AudioTransitionState;
 using airplaywin::audio::TestSignal;
 using airplaywin::audio::TestSignalGenerator;
 using airplaywin::windows::audio::WasapiOutputOptions;
@@ -52,6 +54,29 @@ using airplaywin::windows::system::SingleInstanceGuard;
 using airplaywin::windows::system::WindowsFirewallManager;
 using airplaywin::windows::system::WindowsPowerEventMonitor;
 using airplaywin::windows::timing::QpcClock;
+
+[[nodiscard]] std::wstring_view TransitionStateName(
+    const AudioTransitionState state) noexcept {
+    switch (state) {
+    case AudioTransitionState::Stopped:
+        return L"stopped";
+    case AudioTransitionState::Prewarming:
+        return L"prewarming";
+    case AudioTransitionState::FadingIn:
+        return L"fading-in";
+    case AudioTransitionState::Audible:
+        return L"audible";
+    case AudioTransitionState::FadingOut:
+        return L"fading-out";
+    case AudioTransitionState::Paused:
+        return L"paused";
+    case AudioTransitionState::SafeMute:
+        return L"safe-mute";
+    case AudioTransitionState::DeviceMuted:
+        return L"device-muted";
+    }
+    return L"unknown";
+}
 
 [[nodiscard]] std::atomic_bool& ShutdownRequestedFlag() noexcept {
     static std::atomic_bool requested{false};
@@ -114,7 +139,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-7 buffered timing experiment\n\n"
+        << L"AirPlayWin phase-8 anti-pop validation\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
@@ -134,7 +159,7 @@ void PrintUsage() {
         << L"  AirPlayWin --remove-firewall-rules\n\n"
         << L"Examples:\n"
         << L"  AirPlayWin --play --signal 440 --duration 1800\n"
-        << L"  AirPlayWin --play --device \"{endpoint-id}\" --transition-cycles 100\n"
+        << L"  AirPlayWin --play --device \"{endpoint-id}\" --transition-cycles 1000\n"
         << L"  AirPlayWin --discover --name \"Living Room PC\" --duration 300\n"
         << L"  AirPlayWin --serve --name \"Living Room PC\" --duration 300\n";
 }
@@ -378,7 +403,22 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
                << L", rendered=" << diagnostics.rendered_frames
                << L", stale_epoch=" << diagnostics.dropped_stale_epoch_buffers
                << L", latency_est=" << diagnostics.output_latency_microseconds / 1'000U
-               << L" ms, epoch=" << diagnostics.current_audio_epoch << L"\n"
+               << L" ms, epoch=" << diagnostics.current_audio_epoch
+               << L"\n  transition=" << TransitionStateName(diagnostics.transition_state)
+               << L", requests=" << diagnostics.transition_requests
+               << L", fade_in=" << diagnostics.fade_in_events
+               << L", fade_out=" << diagnostics.fade_out_events
+               << L", safe_mute=" << diagnostics.safe_mute_events
+               << L", hard_resync=" << diagnostics.hard_resync_events
+               << L", underrun_transitions=" << diagnostics.underrun_transition_events
+               << L"\n  click_pop: analyzed_frames=" << diagnostics.click_pop_analyzed_frames
+               << L", events=" << diagnostics.click_pop_events
+               << L", max_step=" << diagnostics.click_pop_maximum_step
+               << L", recent_peak=" << diagnostics.click_pop_recent_peak
+               << L", last_event_frame=" << diagnostics.click_pop_last_event_frame
+               << L"\n  numeric: invalid=" << diagnostics.invalid_numeric_samples
+               << L", clipped=" << diagnostics.clipped_samples
+               << L", dc_events=" << diagnostics.dc_offset_events << L"\n"
                << std::flush;
 }
 
@@ -449,11 +489,27 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
                     return 8;
                 }
             }
-            engine.Flush();
+            switch (cycle % 4U) {
+            case 0U:
+                engine.Flush();
+                break;
+            case 1U:
+                engine.Seek();
+                break;
+            case 2U:
+                engine.HardResync();
+                break;
+            case 3U:
+                engine.ReplaceSender();
+                break;
+            default:
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(15));
             for (std::uint32_t block = 0U; block < 5U; ++block) {
                 if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
-                    std::wcerr << L"PCM submission stalled after flush in cycle " << cycle
+                    std::wcerr << L"PCM submission stalled after timeline reset in cycle "
+                               << cycle
                                << L".\n";
                     engine.Close();
                     return 9;
@@ -645,6 +701,21 @@ void PrintControlDiagnostics(
                << L", queue_frames=" << audio.output.current_buffer_depth_frames
                << L", underruns=" << audio.output.underrun_count
                << L", latency_us=" << audio.output.output_latency_microseconds
+               << L", transition=" << TransitionStateName(audio.output.transition_state)
+               << L", transition_requests=" << audio.output.transition_requests
+               << L", fade(in/out)=" << audio.output.fade_in_events << L"/"
+               << audio.output.fade_out_events
+               << L", safe_mute=" << audio.output.safe_mute_events
+               << L", hard_resync=" << audio.output.hard_resync_events
+               << L", underrun_transitions="
+               << audio.output.underrun_transition_events
+               << L", click_pop(events/max/recent)=" << audio.output.click_pop_events
+               << L"/" << audio.output.click_pop_maximum_step << L"/"
+               << audio.output.click_pop_recent_peak
+               << L", numeric(invalid/clipped/dc)="
+               << audio.output.invalid_numeric_samples << L"/"
+               << audio.output.clipped_samples << L"/"
+               << audio.output.dc_offset_events
                << L", device_recovering="
                << (audio.output.output_recovering ? L"yes" : L"no")
                << L", device_switches=" << audio.output.device_switch_events

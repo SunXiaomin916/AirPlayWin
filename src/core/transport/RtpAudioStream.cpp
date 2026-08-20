@@ -276,6 +276,14 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             return;
         }
         std::scoped_lock processing_lock{processing_mutex_};
+        // Pause/stop can flip the atomic state after the loop-level check while
+        // this worker is waiting for the transition mutex. Recheck under the
+        // serialization boundary so a packet queued during pause is not popped
+        // and rejected by the paused sink before resume can consume it.
+        if (!running_.load(std::memory_order_acquire) ||
+            !recording_.load(std::memory_order_acquire)) {
+            return;
+        }
         BufferedRtpPacket packet;
         const auto kind = jitter_buffer_.Pop(packet);
         if (kind == JitterPopKind::Waiting) {

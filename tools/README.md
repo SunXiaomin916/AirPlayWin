@@ -12,5 +12,10 @@ Phase 7 adds the `--experimental-buffered-timing` receiver mode and
 `--buffered-timing-ms <20..2000>`. Deterministic clock/wrap/drift simulation lives in the timing
 unit suite; the CLI reports its lock, mapping, lateness, and sink scheduling metrics.
 
+Phase 8 extends `--play --transition-cycles 1000` to rotate flush, seek, hard resync, and sender
+replacement while retaining pause/resume, volume ramps, and stop/start. Runtime output includes
+transition counters and post-gate click/pop detector metrics. The deterministic 48 kHz waveform
+stress remains in the unit suite so it is independent of endpoint hardware.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
-injector. Latency capture and click/pop analysis remain future tools.
+injector. Physical loopback latency and post-driver click/pop capture remain future tools.
