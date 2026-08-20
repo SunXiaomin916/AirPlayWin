@@ -1,0 +1,1 @@
+ANNOUNCE rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2\r\nContent-Type: application/sdp\r\nContent-Length: 49\r\n\r\nv=0\r\ns=AirPlayWin fixture\r\nm=audio 0 RTP/AVP 96\r\n

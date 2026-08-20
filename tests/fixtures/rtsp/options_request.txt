@@ -1,0 +1,1 @@
+OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: AirPlayWin-Fixture/1.0\r\nContent-Length: 0\r\n\r\n

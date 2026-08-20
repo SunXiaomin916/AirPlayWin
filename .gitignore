@@ -1,0 +1,7 @@
+/build/
+/out/
+/.vs/
+/.docx-review/
+CMakeUserPresets.json
+*.user
+*.suo

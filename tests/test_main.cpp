@@ -1,0 +1,53 @@
+#include <exception>
+#include <iostream>
+#include <string_view>
+
+void TestAudioEngine();
+void TestAirPlayControlService();
+void TestAudioEpoch();
+void TestAudioRingBuffer();
+void TestAudioTransitionGuard();
+void TestDiscovery();
+void TestIocpTcpServer();
+void TestRtspParser();
+void TestSessionManager();
+void TestSignalGenerator();
+void TestWindowsDiscovery();
+void TestWindowsPlatform();
+
+namespace {
+
+using TestFunction = void (*)();
+
+[[nodiscard]] bool Run(const std::string_view name, const TestFunction function) {
+    try {
+        function();
+        std::cout << "[PASS] " << name << '\n';
+        return true;
+    } catch (const std::exception& error) {
+        std::cerr << "[FAIL] " << name << ": " << error.what() << '\n';
+        return false;
+    } catch (...) {
+        std::cerr << "[FAIL] " << name << ": unknown exception\n";
+        return false;
+    }
+}
+
+}  // namespace
+
+int main() {
+    int failed = 0;
+    failed += Run("AudioEpoch", &TestAudioEpoch) ? 0 : 1;
+    failed += Run("AudioRingBuffer", &TestAudioRingBuffer) ? 0 : 1;
+    failed += Run("AudioTransitionGuard", &TestAudioTransitionGuard) ? 0 : 1;
+    failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
+    failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
+    failed += Run("RtspParser", &TestRtspParser) ? 0 : 1;
+    failed += Run("SessionManager", &TestSessionManager) ? 0 : 1;
+    failed += Run("AirPlayControlService", &TestAirPlayControlService) ? 0 : 1;
+    failed += Run("IocpTcpServer", &TestIocpTcpServer) ? 0 : 1;
+    failed += Run("Discovery", &TestDiscovery) ? 0 : 1;
+    failed += Run("WindowsDiscovery", &TestWindowsDiscovery) ? 0 : 1;
+    failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
+    return failed == 0 ? 0 : 1;
+}
