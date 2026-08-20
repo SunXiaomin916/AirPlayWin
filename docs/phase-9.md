@@ -72,9 +72,15 @@ A fixed 128-entry interarrival-jitter window supplies p95/p99 telemetry. Flush r
 timeline state and the live target but retains cumulative diagnostic counters. No adaptive
 decision changes negotiated presentation timestamps or creates a parallel audio timeline.
 
+Target contraction into `LowLatency` is gated by runtime readiness: the timing model must be
+locked when one is present, and the measured decoder cost must remain below half of the packet
+duration. A readiness loss while already in `LowLatency` enters `Degraded`; downstream underruns
+use the same recovery path. Packet parsing/jitter insertion and decoder time publish rolling
+average/maximum diagnostics, while decode-budget misses are counted explicitly.
+
 ## Latency model and physical harness
 
-The runtime estimate is intentionally decomposed:
+The endpoint estimate is intentionally decomposed:
 
 ```text
 software PCM queue
@@ -87,13 +93,32 @@ software PCM queue
 a physical measurement. Driver, USB/HDMI transport, DAC, analog, and capture latency occur after
 application buffer release.
 
+Receiver-path telemetry adds packet processing, adaptive jitter reserve, the larger of jitter
+reserve and local scheduled-timing reserve, decoder processing, and the endpoint estimate. It is
+reported as an estimate for diagnosis only; it is not used to sign off the physical latency KPI.
+The classic development profile's declared `Audio-Latency` value is also carried through setup
+and reported in frames/microseconds, but remains distinct from this measured-cost estimate.
+
 `--analyze-loopback` reads PCM16 or float32 RIFF/WAVE, including extensible PCM/float subtypes.
+The reader validates the complete extensible subtype GUID, rejects malformed/truncated chunks,
+and caps one analysis input at 512 MiB. Generate the measurement stimulus after endpoint prewarm:
+
+```powershell
+.\build\vs2022-x64\Release\AirPlayWin.exe --play --exclusive --strict-exclusive `
+    --signal latency-pulse --duration 10
+```
+
+`latency-pulse` emits its first 0.5-full-scale pulse after 250 ms and then once per second. This
+keeps the first reference/output pair outside the startup silent-prewarm/fade window; the ordinary
+`impulse` signal retains its original immediate-pulse semantics for existing audio tests.
+
 The preferred fixture has the emitted impulse on one channel and the returned physical/virtual
 loopback on another:
 
 ```powershell
 .\build\vs2022-x64\Release\AirPlayWin.exe --analyze-loopback .\capture.wav `
-    --reference-channel 0 --output-channel 1
+    --reference-channel 0 --output-channel 1 --onset-threshold 0.20 `
+    --max-latency-ms 1000
 ```
 
 For a recording aligned to an independently known stimulus frame:
@@ -103,9 +128,10 @@ For a recording aligned to an independently known stimulus frame:
     --stimulus-frame 4800 --output-channel 0
 ```
 
-The analyzer reports status, onset frames, frame/microsecond latency, and both peaks. It uses a
-0.25 full-scale onset threshold and rejects negative or greater-than-one-second results. The
-PowerShell wrapper in `tools/Measure-LoopbackLatency.ps1` supplies the same two modes.
+The analyzer reports status, onset frames, frame/microsecond latency, and both peaks. Its default
+threshold is 0.25 full scale and default maximum is one second; both are CLI-configurable within
+safe bounds. The PowerShell wrapper in `tools/Measure-LoopbackLatency.ps1` supplies the same two
+modes and controls.
 
 ## Diagnostics
 
@@ -113,7 +139,9 @@ Output diagnostics now include requested/active mode, `legacy`/`IAudioClient3`, 
 low-latency active, fallback and HRESULT, exclusive start timeouts, wakeups, endpoint buffer,
 engine period, queue target, and latency components. Receiver diagnostics add adaptive state,
 minimum/current/maximum targets, learned packet duration, jitter p95/p99, target increases/
-decreases, degradation events, and downstream underruns.
+decreases, degradation events, downstream underruns, timing/decode readiness, packet/decode
+average and maximum cost, decode-budget misses, jitter/scheduled reserve, output-path latency,
+the combined receiver-added estimate, and the separately labeled protocol-declared latency.
 
 No render-thread text formatting was added; CLI rendering consumes atomic/control-thread
 snapshots.
@@ -122,16 +150,19 @@ snapshots.
 
 - Debug and Release x64 compile with MSVC `/W4 /WX`.
 - All 29 modules pass in both configurations.
-- Adaptive tests cover stable contraction, jitter-p99 expansion, and downstream-underrun
-  expansion/state degradation.
+- Adaptive tests cover readiness-gated contraction, decode-readiness loss, 0-100 ms jitter-p99
+  expansion, loss, late arrival, overflow, downstream-underrun growth, recovery, slow shrink,
+  and flush reset.
 - Endpoint-model tests cover queue/padding/engine/calibration composition, engine-period
   fallback, and negative clamping.
 - Loopback tests cover dual-channel 10 ms, known-frame 5 ms, missing onset, invalid channel
   mapping, and maximum-latency rejection.
-- The WAVE reader test creates and reads a PCM16 stereo capture and validates sample conversion
-  and missing-file failure.
+- The WAVE reader test covers PCM16, extensible float32, complete subtype-GUID validation,
+  malformed chunk rejection, sample conversion, and missing-file failure.
 - The complete 29-module Release suite passed 50 consecutive runs; final Debug and Release CTest
   also pass.
+- CLI smoke tests cover successful `--help`, analysis controls, invalid-mode/NaN rejection, and
+  the PowerShell measurement wrapper.
 
 ## Development-machine hardware results
 
@@ -150,7 +181,7 @@ The default Realtek endpoint rejected the float32 `IAudioClient3` period request
 `0x88890008`; the tested fallback reopened legacy Shared and ran without underruns. This is an
 endpoint capability result, not a hidden low-latency success.
 
-CPack produced `AirPlayWin-0.9.0-windows-x64.zip`, and its Release executable, README, installer
+CPack produced `AirPlayWin-0.9.1-windows-x64.zip`, and its Release executable, README, installer
 guide, and installation scripts were inspected.
 
 ## Acceptance boundary and next stage

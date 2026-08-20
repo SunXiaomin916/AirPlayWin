@@ -75,12 +75,21 @@ public:
 
     [[nodiscard]] audio::AudioSinkFeedback Feedback() const noexcept override {
         std::scoped_lock lock{mutex_};
-        return {.underrun_count = underrun_count_};
+        return {.queued_frames = queued_frames_,
+                .underrun_count = underrun_count_,
+                .output_latency_microseconds = output_latency_microseconds_};
     }
 
     void SetUnderrunCount(const std::uint64_t count) noexcept {
         std::scoped_lock lock{mutex_};
         underrun_count_ = count;
+    }
+
+    void SetOutputFeedback(const std::uint32_t queued_frames,
+                           const std::uint64_t output_latency_microseconds) noexcept {
+        std::scoped_lock lock{mutex_};
+        queued_frames_ = queued_frames;
+        output_latency_microseconds_ = output_latency_microseconds;
     }
 
     [[nodiscard]] std::uint64_t SubmittedFrames() const noexcept {
@@ -131,6 +140,8 @@ private:
     std::uint64_t flush_count_{0U};
     std::uint64_t stop_count_{0U};
     std::uint64_t underrun_count_{0U};
+    std::uint32_t queued_frames_{0U};
+    std::uint64_t output_latency_microseconds_{0U};
     std::vector<float> samples_{};
     std::vector<std::uint32_t> frame_counts_{};
     std::vector<std::uint32_t> timestamps_{};

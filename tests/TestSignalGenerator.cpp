@@ -36,6 +36,18 @@ void TestSignalGenerator() {
     APW_EXPECT(samples[1] == 0.5F);
     APW_EXPECT(samples[2] == 0.0F);
 
+    TestSignalGenerator latency_pulse{format, TestSignal::LatencyPulse, 0.5F};
+    for (std::uint32_t block = 0U; block < 25U; ++block) {
+        latency_pulse.Fill(samples, 480U);
+        for (const auto sample : samples) {
+            APW_EXPECT(sample == 0.0F);
+        }
+    }
+    latency_pulse.Fill(samples, 480U);
+    APW_EXPECT(samples[0] == 0.5F);
+    APW_EXPECT(samples[1] == 0.5F);
+    APW_EXPECT(samples[2] == 0.0F);
+
     TestSignalGenerator sweep{format, TestSignal::Sweep, 0.2F};
     sweep.Fill(samples, 480U);
     for (const auto sample : samples) {

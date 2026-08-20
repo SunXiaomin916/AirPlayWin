@@ -28,6 +28,14 @@ void TestSignalGenerator::Fill(const std::span<float> interleaved_destination,
         float sample = 0.0F;
         if (signal_ == TestSignal::Impulse) {
             sample = (generated_frames_ % format_.sample_rate == 0U) ? amplitude_ : 0.0F;
+        } else if (signal_ == TestSignal::LatencyPulse) {
+            const auto initial_silence_frames = format_.sample_rate / 4U;
+            sample = generated_frames_ >= initial_silence_frames &&
+                             (generated_frames_ - initial_silence_frames) %
+                                     format_.sample_rate ==
+                                 0U
+                         ? amplitude_
+                         : 0.0F;
         } else if (signal_ != TestSignal::Silence) {
             sample = amplitude_ * static_cast<float>(std::sin(phase_radians_));
             const auto phase_step = 2.0 * std::numbers::pi_v<double> *

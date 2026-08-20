@@ -20,7 +20,9 @@ stress remains in the unit suite so it is independent of endpoint hardware.
 Phase 9 adds `--low-latency`, `--exclusive`, `--strict-exclusive`, and
 `--endpoint-offset-us`. The receiver reports the negotiated WASAPI path and every component of
 its latency model. `Measure-LoopbackLatency.ps1` invokes the WAVE capture analyzer in either
-dual-channel reference/return mode or known-stimulus-frame mode.
+dual-channel reference/return mode or known-stimulus-frame mode, with configurable onset
+threshold and maximum latency. Use `--play --signal latency-pulse` for capture: unlike the
+ordinary immediate impulse, its first pulse occurs after endpoint silent prewarm/fade-in.
 
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
 injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not

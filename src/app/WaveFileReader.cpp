@@ -1,5 +1,6 @@
 #include "app/WaveFileReader.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <fstream>
@@ -8,6 +9,8 @@
 
 namespace airplaywin::app {
 namespace {
+
+constexpr std::uintmax_t kMaximumCaptureBytes = 512U * 1'024U * 1'024U;
 
 [[nodiscard]] std::uint16_t ReadU16(const std::span<const std::byte> bytes,
                                     const std::size_t offset) noexcept {
@@ -38,6 +41,24 @@ namespace {
            std::to_integer<char>(bytes[offset + 3U]) == text[3];
 }
 
+[[nodiscard]] bool MatchesWaveSubtypeGuid(const std::span<const std::byte> bytes,
+                                          const std::size_t offset,
+                                          const std::uint16_t format_tag) noexcept {
+    constexpr std::array<std::uint8_t, 12U> kWaveSubtypeTail{
+        0x00U, 0x00U, 0x10U, 0x00U, 0x80U, 0x00U,
+        0x00U, 0xAAU, 0x00U, 0x38U, 0x9BU, 0x71U};
+    if (offset + 16U > bytes.size() || ReadU32(bytes, offset) != format_tag) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < kWaveSubtypeTail.size(); ++index) {
+        if (std::to_integer<std::uint8_t>(bytes[offset + 4U + index]) !=
+            kWaveSubtypeTail[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool ReadWaveCapture(const std::filesystem::path& path,
@@ -51,14 +72,20 @@ bool ReadWaveCapture(const std::filesystem::path& path,
         return false;
     }
     const auto end = stream.tellg();
-    if (end <= 0 || static_cast<std::uintmax_t>(end) >
-                        static_cast<std::uintmax_t>(
-                            std::numeric_limits<std::streamsize>::max())) {
+    if (end <= 0 || static_cast<std::uintmax_t>(end) > kMaximumCaptureBytes ||
+        static_cast<std::uintmax_t>(end) >
+            static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
         error = L"capture file size is invalid";
         return false;
     }
     const auto size = static_cast<std::size_t>(end);
-    std::vector<std::byte> storage(size);
+    std::vector<std::byte> storage;
+    try {
+        storage.resize(size);
+    } catch (...) {
+        error = L"capture file allocation failed";
+        return false;
+    }
     stream.seekg(0, std::ios::beg);
     if (!stream.read(reinterpret_cast<char*>(storage.data()),
                      static_cast<std::streamsize>(storage.size()))) {
@@ -108,12 +135,22 @@ bool ReadWaveCapture(const std::filesystem::path& path,
     const auto bits_per_sample = ReadU16(bytes, format_offset + 14U);
     constexpr std::uint16_t kWaveFormatExtensible = 0xFFFEU;
     if (format_tag == kWaveFormatExtensible) {
-        if (format_size < 40U) {
+        constexpr std::uint16_t kPcm = 1U;
+        constexpr std::uint16_t kIeeeFloat = 3U;
+        if (format_size < 40U || ReadU16(bytes, format_offset + 16U) < 22U) {
             error = L"WAVE extensible format is truncated";
             return false;
         }
-        const auto subformat = ReadU32(bytes, format_offset + 24U);
-        format_tag = static_cast<std::uint16_t>(subformat);
+        const auto valid_bits = ReadU16(bytes, format_offset + 18U);
+        const auto subformat = static_cast<std::uint16_t>(
+            ReadU32(bytes, format_offset + 24U));
+        if (valid_bits == 0U || valid_bits > bits_per_sample ||
+            (subformat != kPcm && subformat != kIeeeFloat) ||
+            !MatchesWaveSubtypeGuid(bytes, format_offset + 24U, subformat)) {
+            error = L"WAVE extensible subtype is invalid or unsupported";
+            return false;
+        }
+        format_tag = subformat;
     }
     const bool pcm16 = format_tag == 1U && bits_per_sample == 16U;
     const bool float32 = format_tag == 3U && bits_per_sample == 32U;

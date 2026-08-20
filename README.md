@@ -148,12 +148,15 @@ yet.
   and a signed per-endpoint calibration offset.
 - Adaptive jitter targets with warmup, locked, low-latency, degraded, and recovery states;
   stable traffic contracts slowly while jitter, loss, overflow, late packets, or downstream
-  audio underruns expand the reserve quickly.
+  audio underruns expand the reserve quickly. `LOW_LATENCY` additionally requires a locked
+  timing model (when enabled) and sufficient measured decoder budget.
 - PCM16/float32 RIFF/WAVE capture reader plus dual-channel or known-stimulus impulse-onset
-  analysis for physical/virtual loopback latency measurements.
+  analysis for physical/virtual loopback latency measurements. A dedicated post-prewarm
+  `latency-pulse` signal avoids losing the first measurement impulse in the anti-pop gate.
 - CLI diagnostics expose requested/active output mode, client path, endpoint format, fallback
   HRESULT, period, endpoint buffer, queue target, latency breakdown, adaptive target/state,
-  jitter p95/p99, and target-change counters.
+  jitter p95/p99, packet/decode cost, readiness gates, target-change counters, the classic
+  protocol-declared latency, and a separate decomposed receiver-path estimate.
 
 ## Architecture
 
@@ -361,8 +364,10 @@ Analyze a dual-channel WAVE capture whose channel 0 contains the direct emitted 
 channel 1 contains the physical/virtual loopback return:
 
 ```powershell
+.\build\vs2022-x64\Release\AirPlayWin.exe --play --exclusive --strict-exclusive `
+    --signal latency-pulse --duration 10
 .\build\vs2022-x64\Release\AirPlayWin.exe --analyze-loopback .\capture.wav `
-    --reference-channel 0 --output-channel 1
+    --reference-channel 0 --output-channel 1 --onset-threshold 0.20
 ```
 
 The equivalent PowerShell wrapper is `tools\Measure-LoopbackLatency.ps1`. A real cable,
@@ -497,7 +502,7 @@ instead of failing or silently claiming low latency. No synchronized physical lo
 was available in this run, so the document's receiver-added-latency threshold is not claimed as
 physically accepted from QPC/model estimates alone.
 
-CPack generated `AirPlayWin-0.9.0-windows-x64.zip`; its executable, project README, installer
+CPack generated `AirPlayWin-0.9.1-windows-x64.zip`; its executable, project README, installer
 guide, and install/uninstall scripts were inspected in the archive.
 
 ## Current boundary

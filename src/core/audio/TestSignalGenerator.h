@@ -12,6 +12,7 @@ enum class TestSignal : std::uint8_t {
     Sine1kHz,
     Silence,
     Impulse,
+    LatencyPulse,
     Sweep,
 };
 

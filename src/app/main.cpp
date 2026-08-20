@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -172,6 +173,7 @@ private:
 };
 
 struct CommandLine final {
+    bool show_help{false};
     bool list_devices{false};
     bool list_network_interfaces{false};
     bool play{false};
@@ -193,7 +195,10 @@ struct CommandLine final {
     std::uint32_t loopback_output_channel{1U};
     bool loopback_reference_channel_set{false};
     bool loopback_output_channel_set{false};
+    bool loopback_analysis_option_set{false};
     std::optional<std::uint64_t> loopback_stimulus_frame{};
+    float loopback_onset_threshold{0.25F};
+    std::uint32_t loopback_maximum_latency_milliseconds{1'000U};
     std::wstring device_id{};
     std::int64_t endpoint_calibration_offset_microseconds{0};
     std::wstring discovery_name{L"AirPlayWin"};
@@ -211,9 +216,11 @@ struct CommandLine final {
 void PrintUsage() {
     std::wcout
         << L"AirPlayWin phase-9 low-latency validation\n\n"
+        << L"  AirPlayWin --help\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
-        << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
+        << L"  AirPlayWin --play [--device <endpoint-id>]\n"
+        << L"             [--signal 440|1000|silence|impulse|latency-pulse|sweep]\n"
         << L"             [--sample-rate <8000..384000>] [--duration <seconds>]\n"
         << L"             [--transition-cycles <count>]\n"
         << L"             [--low-latency] [--exclusive [--strict-exclusive]]\n"
@@ -232,7 +239,8 @@ void PrintUsage() {
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --analyze-loopback <capture.wav>\n"
         << L"             [--reference-channel <index> --output-channel <index>]\n"
-        << L"             [--stimulus-frame <frame> --output-channel <index>]\n\n"
+        << L"             [--stimulus-frame <frame> --output-channel <index>]\n"
+        << L"             [--onset-threshold <0.01..1.0>] [--max-latency-ms <1..10000>]\n\n"
         << L"  AirPlayWin --firewall-status [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --install-firewall-rules [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --remove-firewall-rules\n\n"
@@ -240,6 +248,7 @@ void PrintUsage() {
         << L"  AirPlayWin --play --signal 440 --duration 1800\n"
         << L"  AirPlayWin --play --device \"{endpoint-id}\" --transition-cycles 1000\n"
         << L"  AirPlayWin --play --low-latency --exclusive --signal 440\n"
+        << L"  AirPlayWin --play --exclusive --signal latency-pulse --duration 5\n"
         << L"  AirPlayWin --analyze-loopback capture.wav --reference-channel 0 --output-channel 1\n"
         << L"  AirPlayWin --discover --name \"Living Room PC\" --duration 300\n"
         << L"  AirPlayWin --serve --name \"Living Room PC\" --duration 300\n";
@@ -287,6 +296,20 @@ void PrintUsage() {
     return true;
 }
 
+[[nodiscard]] bool ParseFloat(const wchar_t* const text, float& value) {
+    if (text == nullptr || *text == L'\0') {
+        return false;
+    }
+    errno = 0;
+    wchar_t* end = nullptr;
+    const auto parsed = std::wcstof(text, &end);
+    if (errno == ERANGE || end == text || *end != L'\0' || !std::isfinite(parsed)) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
 [[nodiscard]] bool ParseSignal(const std::wstring& value, TestSignal& signal) {
     if (value == L"440") {
         signal = TestSignal::Sine440Hz;
@@ -296,6 +319,8 @@ void PrintUsage() {
         signal = TestSignal::Silence;
     } else if (value == L"impulse") {
         signal = TestSignal::Impulse;
+    } else if (value == L"latency-pulse") {
+        signal = TestSignal::LatencyPulse;
     } else if (value == L"sweep") {
         signal = TestSignal::Sweep;
     } else {
@@ -316,7 +341,9 @@ void PrintUsage() {
 [[nodiscard]] bool ParseCommandLine(const int argc, wchar_t* argv[], CommandLine& command) {
     for (int index = 1; index < argc; ++index) {
         const std::wstring argument{argv[index]};
-        if (argument == L"--list-devices") {
+        if (argument == L"--help" || argument == L"-h") {
+            command.show_help = true;
+        } else if (argument == L"--list-devices") {
             command.list_devices = true;
         } else if (argument == L"--list-network-interfaces") {
             command.list_network_interfaces = true;
@@ -356,18 +383,36 @@ void PrintUsage() {
                 return false;
             }
             command.loopback_reference_channel_set = true;
+            command.loopback_analysis_option_set = true;
         } else if (argument == L"--output-channel" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index], command.loopback_output_channel) ||
                 command.loopback_output_channel > 7U) {
                 return false;
             }
             command.loopback_output_channel_set = true;
+            command.loopback_analysis_option_set = true;
         } else if (argument == L"--stimulus-frame" && index + 1 < argc) {
             std::uint64_t stimulus_frame = 0U;
             if (!ParseUnsigned64(argv[++index], stimulus_frame)) {
                 return false;
             }
             command.loopback_stimulus_frame = stimulus_frame;
+            command.loopback_analysis_option_set = true;
+        } else if (argument == L"--onset-threshold" && index + 1 < argc) {
+            if (!ParseFloat(argv[++index], command.loopback_onset_threshold) ||
+                command.loopback_onset_threshold < 0.01F ||
+                command.loopback_onset_threshold > 1.0F) {
+                return false;
+            }
+            command.loopback_analysis_option_set = true;
+        } else if (argument == L"--max-latency-ms" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index],
+                               command.loopback_maximum_latency_milliseconds) ||
+                command.loopback_maximum_latency_milliseconds < 1U ||
+                command.loopback_maximum_latency_milliseconds > 10'000U) {
+                return false;
+            }
+            command.loopback_analysis_option_set = true;
         } else if (argument == L"--endpoint-offset-us" && index + 1 < argc) {
             if (!ParseSignedMicroseconds(
                     argv[++index], command.endpoint_calibration_offset_microseconds)) {
@@ -450,8 +495,7 @@ void PrintUsage() {
         return false;
     }
     if (!command.analyze_loopback &&
-        (command.loopback_reference_channel_set || command.loopback_output_channel_set ||
-         command.loopback_stimulus_frame.has_value())) {
+        command.loopback_analysis_option_set) {
         return false;
     }
     if (command.analyze_loopback && command.loopback_stimulus_frame.has_value() &&
@@ -571,6 +615,9 @@ void ListNetworkInterfaces(const bool include_virtual_interfaces) {
                                            command.loopback_reference_channel)},
         .known_stimulus_frame = command.loopback_stimulus_frame,
         .output_channel = static_cast<std::uint16_t>(command.loopback_output_channel),
+        .onset_threshold = command.loopback_onset_threshold,
+        .maximum_latency_milliseconds =
+            command.loopback_maximum_latency_milliseconds,
     };
     const auto result = airplaywin::audio::LoopbackLatencyAnalyzer::Analyze(
         capture.interleaved_samples, config);
@@ -688,7 +735,8 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
                                   : 240U;
     std::vector<float> samples(static_cast<std::size_t>(block_frames) *
                                format.channel_count);
-    TestSignalGenerator generator{format, command.signal};
+    TestSignalGenerator generator{format, command.signal,
+                                  command.signal == TestSignal::LatencyPulse ? 0.5F : 0.2F};
     const auto configured_prefill = command.low_latency
                                         ? output_configuration.queue_target_frames
                                         : 2U * block_frames;
@@ -942,6 +990,26 @@ void PrintControlDiagnostics(
                << transport.jitter_buffer.target_decrease_events
                << L", downstream_underruns="
                << transport.jitter_buffer.downstream_underruns
+               << L", protocol_latency(frames/us)="
+               << transport.protocol_latency_frames << L"/"
+               << transport.protocol_latency_microseconds
+               << L", readiness(clock/decode/ready)="
+               << (transport.jitter_buffer.timing_locked ? L"yes" : L"no") << L"/"
+               << (transport.jitter_buffer.decode_margin_sufficient ? L"yes" : L"no")
+               << L"/"
+               << (transport.jitter_buffer.low_latency_conditions_ready ? L"yes" : L"no")
+               << L", packet_us(avg/max)="
+               << transport.packet_processing_average_microseconds << L"/"
+               << transport.packet_processing_maximum_microseconds
+               << L", decode_us(avg/max)="
+               << transport.decode_processing_average_microseconds << L"/"
+               << transport.decode_processing_maximum_microseconds
+               << L", decode_budget_miss=" << transport.decode_budget_miss_count
+               << L", receiver_latency_us(jitter/scheduled/output/estimate)="
+               << transport.jitter_reserve_microseconds << L"/"
+               << transport.scheduled_reserve_microseconds << L"/"
+               << transport.output_path_latency_microseconds << L"/"
+               << transport.receiver_added_latency_estimate_microseconds
                << L", timeline_resets=" << transport.timeline_resets
                << L", anchor_seq="
                << (transport.has_sequence_anchor
@@ -1216,6 +1284,10 @@ int wmain(const int argc, wchar_t* argv[]) {
     if (!ParseCommandLine(argc, argv, command)) {
         PrintUsage();
         return 1;
+    }
+    if (command.show_help) {
+        PrintUsage();
+        return 0;
     }
     const bool firewall_command = command.firewall_status || command.install_firewall_rules ||
                                   command.remove_firewall_rules;

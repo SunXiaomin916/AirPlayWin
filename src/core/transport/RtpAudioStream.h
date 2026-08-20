@@ -20,6 +20,7 @@ struct RtpAudioStreamConfig final {
     ConnectionId connection_id{0U};
     audio::EncodedAudioFormat format{};
     RtpJitterBufferConfig jitter_buffer{};
+    std::uint32_t protocol_latency_frames{0U};
     std::uint32_t allowed_peer_ipv4_network_order{0U};
 };
 
@@ -52,6 +53,9 @@ private:
     void ResetPacketTimeline(const AudioTimelineAnchor& anchor) noexcept;
     [[nodiscard]] bool IsAtOrAfterTimeline(const RtpPacketView& packet) const noexcept;
     [[nodiscard]] bool SubmitWithBackpressure(const audio::DecodedAudioFrameView& frame) noexcept;
+    void RecordPacketCost(std::uint64_t elapsed_microseconds) noexcept;
+    void RecordDecodeCost(std::uint64_t elapsed_microseconds,
+                          bool margin_sufficient) noexcept;
 
     RtpAudioStreamConfig config_{};
     std::unique_ptr<audio::IAudioDecoder> decoder_;
@@ -85,7 +89,12 @@ private:
     std::atomic<std::uint64_t> decoded_frames_{0U};
     std::atomic<std::uint64_t> concealed_packets_{0U};
     std::atomic<std::uint64_t> concealed_frames_{0U};
+    std::atomic<std::uint64_t> packet_processing_average_microseconds_{0U};
+    std::atomic<std::uint64_t> packet_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decoder_errors_{0U};
+    std::atomic<std::uint64_t> decode_processing_average_microseconds_{0U};
+    std::atomic<std::uint64_t> decode_processing_maximum_microseconds_{0U};
+    std::atomic<std::uint64_t> decode_budget_miss_count_{0U};
     std::atomic<std::uint64_t> sink_backpressure_events_{0U};
     std::uint64_t observed_sink_underruns_{0U};
     std::atomic<std::uint32_t> last_error_{0U};

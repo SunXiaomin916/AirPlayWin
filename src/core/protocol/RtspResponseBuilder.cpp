@@ -35,7 +35,7 @@ std::vector<std::byte> BuildResponse(const Request& request, const ResponseSpec&
         Append(output, *cseq);
         Append(output, "\r\n");
     }
-    Append(output, "Server: AirPlayWin/0.9\r\n");
+    Append(output, "Server: AirPlayWin/0.9.1\r\n");
     for (const auto& header : response.headers) {
         if (SafeHeader(header) && !EqualsAsciiCaseInsensitive(header.name, "Content-Length") &&
             !EqualsAsciiCaseInsensitive(header.name, "CSeq") &&

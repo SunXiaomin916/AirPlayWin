@@ -70,6 +70,7 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
             .connection_id = request.connection_id,
             .format = request.format,
             .jitter_buffer = jitter_config,
+            .protocol_latency_frames = request.protocol_latency_frames,
             .allowed_peer_ipv4_network_order = allowed_peer.s_addr,
         },
         std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink_,

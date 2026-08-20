@@ -35,6 +35,7 @@ void TestRtpAudioStream() {
     using airplaywin::transport::RtpAudioStreamConfig;
 
     FakeAudioFrameSink sink;
+    sink.SetOutputFeedback(240U, 7'000U);
     RtpAudioStream stream{
         RtpAudioStreamConfig{
             .connection_id = 42U,
@@ -50,6 +51,7 @@ void TestRtpAudioStream() {
                               .maximum_target_packets = 6U,
                               .stable_window_packets = 8U,
                               .recovery_window_packets = 4U},
+            .protocol_latency_frames = 11'025U,
         },
         std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink};
     APW_EXPECT(stream.Start());
@@ -74,6 +76,8 @@ void TestRtpAudioStream() {
     APW_EXPECT(diagnostics.concealed_packets == 1U);
     APW_EXPECT(diagnostics.concealed_frames == 1U);
     APW_EXPECT(diagnostics.jitter_buffer.lost_packets == 1U);
+    APW_EXPECT(diagnostics.protocol_latency_frames == 11'025U);
+    APW_EXPECT(diagnostics.protocol_latency_microseconds == 250'000U);
     const auto samples = sink.Samples();
     APW_EXPECT(samples.size() == 8U);
     APW_EXPECT_NEAR(samples[0], 0.5, 0.00001);
@@ -115,6 +119,15 @@ void TestRtpAudioStream() {
     stream.OnDatagram(wrapped_sequence1, source, 1'007'000'000LL);
     APW_EXPECT(WaitForFrames(sink, 7U));
     APW_EXPECT(stream.Diagnostics().timeline_rejected_packets == 1U);
+    const auto latency_diagnostics = stream.Diagnostics();
+    APW_EXPECT(latency_diagnostics.packet_processing_average_microseconds >= 1U);
+    APW_EXPECT(latency_diagnostics.packet_processing_maximum_microseconds >=
+               latency_diagnostics.packet_processing_average_microseconds);
+    APW_EXPECT(latency_diagnostics.decode_processing_average_microseconds >= 1U);
+    APW_EXPECT(latency_diagnostics.decode_processing_maximum_microseconds >=
+               latency_diagnostics.decode_processing_average_microseconds);
+    APW_EXPECT(latency_diagnostics.output_path_latency_microseconds == 7'000U);
+    APW_EXPECT(latency_diagnostics.receiver_added_latency_estimate_microseconds >= 7'000U);
     sink.SetUnderrunCount(3U);
     const auto feedback_packet = BuildRtpPacket(2U, 2U, positive);
     stream.OnDatagram(feedback_packet, source, 1'008'000'000LL);

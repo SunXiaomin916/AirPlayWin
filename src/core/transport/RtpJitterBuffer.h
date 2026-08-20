@@ -53,6 +53,15 @@ enum class JitterPopKind : std::uint8_t {
     Missing,
 };
 
+struct AdaptiveJitterRuntimeConditions final {
+    bool timing_locked{false};
+    bool decode_margin_sufficient{false};
+
+    [[nodiscard]] constexpr bool Ready() const noexcept {
+        return timing_locked && decode_margin_sufficient;
+    }
+};
+
 struct RtpJitterBufferDiagnostics final {
     std::size_t buffered_packets{0U};
     std::size_t target_packets{0U};
@@ -79,6 +88,9 @@ struct RtpJitterBufferDiagnostics final {
     std::uint64_t degradation_events{0U};
     std::uint64_t downstream_underruns{0U};
     std::uint32_t consecutive_stable_packets{0U};
+    bool timing_locked{false};
+    bool decode_margin_sufficient{false};
+    bool low_latency_conditions_ready{false};
 };
 
 class RtpJitterBuffer final {
@@ -92,6 +104,7 @@ public:
                               std::int64_t arrival_time_nanoseconds) noexcept;
     [[nodiscard]] JitterPopKind Pop(BufferedRtpPacket& packet) noexcept;
     void ReportDownstreamUnderrun(std::uint64_t count = 1U) noexcept;
+    void UpdateRuntimeConditions(AdaptiveJitterRuntimeConditions conditions) noexcept;
     void Flush() noexcept;
     [[nodiscard]] RtpJitterBufferDiagnostics Diagnostics() const noexcept;
 
@@ -147,6 +160,7 @@ private:
     std::uint64_t target_decrease_events_{0U};
     std::uint64_t degradation_events_{0U};
     std::uint64_t downstream_underruns_{0U};
+    AdaptiveJitterRuntimeConditions runtime_conditions_{};
 };
 
 }  // namespace airplaywin::transport

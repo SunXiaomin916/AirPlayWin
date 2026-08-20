@@ -11,6 +11,8 @@
 
 namespace airplaywin::transport {
 
+inline constexpr std::uint32_t kClassicDevelopmentAudioLatencyFrames = 11'025U;
+
 // A sender-provided lower bound for a new RTP timeline. Sequence numbers and
 // timestamps use their native wrapping domains and are compared wrap-aware.
 struct AudioTimelineAnchor final {
@@ -26,6 +28,7 @@ struct AudioTransportSetupRequest final {
     ConnectionId connection_id{0U};
     std::string peer_address{};
     audio::EncodedAudioFormat format{};
+    std::uint32_t protocol_latency_frames{0U};
     std::uint16_t client_control_port{0U};
     std::uint16_t client_timing_port{0U};
 };
@@ -54,6 +57,8 @@ struct AudioTransportDiagnostics final {
     bool configured{false};
     bool recording{false};
     ConnectionId connection_id{0U};
+    std::uint32_t protocol_latency_frames{0U};
+    std::uint64_t protocol_latency_microseconds{0U};
     std::uint16_t server_audio_port{0U};
     std::uint16_t server_control_port{0U};
     std::uint16_t server_timing_port{0U};
@@ -73,8 +78,17 @@ struct AudioTransportDiagnostics final {
     std::uint64_t decoded_frames{0U};
     std::uint64_t concealed_packets{0U};
     std::uint64_t concealed_frames{0U};
+    std::uint64_t packet_processing_average_microseconds{0U};
+    std::uint64_t packet_processing_maximum_microseconds{0U};
     std::uint64_t decoder_errors{0U};
+    std::uint64_t decode_processing_average_microseconds{0U};
+    std::uint64_t decode_processing_maximum_microseconds{0U};
+    std::uint64_t decode_budget_miss_count{0U};
     std::uint64_t sink_backpressure_events{0U};
+    std::uint64_t jitter_reserve_microseconds{0U};
+    std::uint64_t scheduled_reserve_microseconds{0U};
+    std::uint64_t output_path_latency_microseconds{0U};
+    std::uint64_t receiver_added_latency_estimate_microseconds{0U};
     std::uint64_t control_datagrams{0U};
     std::uint64_t timing_datagrams{0U};
     RtpJitterBufferDiagnostics jitter_buffer{};

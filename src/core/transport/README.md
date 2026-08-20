@@ -26,4 +26,9 @@ Phase 9 optionally adapts the jitter target without changing sender timestamps o
 presentation timeline. Stable input reduces the target by one learned packet duration per
 stable window; jitter p99, late/lost/overflow events, and downstream audio underruns increase it
 quickly. The state machine is `Warmup -> Locked -> LowLatency`, with `Degraded -> Recovery` for
-fault handling. All storage, including the 128-sample jitter percentile window, is fixed.
+fault handling. Entry into `LowLatency` also requires timing lock when timing is enabled and a
+measured decoder cost below half of packet duration. Packet/decode rolling costs and the
+jitter/scheduled/output receiver-path estimate are diagnostics only and never alter negotiated
+timestamps. The classic protocol-declared latency is transported and reported separately from
+that receiver-path estimate. All storage, including the 128-sample jitter percentile window, is
+fixed.

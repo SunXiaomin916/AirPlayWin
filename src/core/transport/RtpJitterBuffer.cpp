@@ -125,6 +125,17 @@ void RtpJitterBuffer::ReportDownstreamUnderrun(const std::uint64_t count) noexce
     RecordDisturbanceLocked(std::max<std::size_t>(growth, 1U));
 }
 
+void RtpJitterBuffer::UpdateRuntimeConditions(
+    const AdaptiveJitterRuntimeConditions conditions) noexcept {
+    std::scoped_lock lock{mutex_};
+    const auto were_ready = runtime_conditions_.Ready();
+    runtime_conditions_ = conditions;
+    if (config_.adaptive_enabled && were_ready && !runtime_conditions_.Ready() &&
+        adaptive_state_ == AdaptiveJitterState::LowLatency) {
+        RecordDisturbanceLocked(1U);
+    }
+}
+
 void RtpJitterBuffer::Flush() noexcept {
     std::scoped_lock lock{mutex_};
     ResetTimelineLocked();
@@ -174,6 +185,9 @@ RtpJitterBufferDiagnostics RtpJitterBuffer::Diagnostics() const noexcept {
         .degradation_events = degradation_events_,
         .downstream_underruns = downstream_underruns_,
         .consecutive_stable_packets = consecutive_stable_packets_,
+        .timing_locked = runtime_conditions_.timing_locked,
+        .decode_margin_sufficient = runtime_conditions_.decode_margin_sufficient,
+        .low_latency_conditions_ready = runtime_conditions_.Ready(),
     };
 }
 
@@ -217,6 +231,7 @@ void RtpJitterBuffer::ResetTimelineLocked() noexcept {
     adaptation_observation_count_ = 0U;
     consecutive_stable_packets_ = 0U;
     buffered_packets_ = 0U;
+    runtime_conditions_ = {};
 }
 
 void RtpJitterBuffer::UpdateJitter(const std::uint32_t timestamp,
@@ -306,6 +321,11 @@ void RtpJitterBuffer::RecordStablePacketLocked() noexcept {
     if ((adaptive_state_ == AdaptiveJitterState::Locked ||
          adaptive_state_ == AdaptiveJitterState::LowLatency) &&
         consecutive_stable_packets_ >= config_.stable_window_packets) {
+        if (!runtime_conditions_.Ready()) {
+            adaptive_state_ = AdaptiveJitterState::Locked;
+            consecutive_stable_packets_ = 0U;
+            return;
+        }
         const auto desired = DesiredTargetPacketsLocked();
         if (current_target_packets_ > desired) {
             --current_target_packets_;

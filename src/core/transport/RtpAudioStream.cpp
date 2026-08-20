@@ -2,11 +2,22 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 
 #include "core/transport/RtpPacket.h"
 
 namespace airplaywin::transport {
+namespace {
+
+[[nodiscard]] std::uint64_t SaturatingAdd(const std::uint64_t left,
+                                          const std::uint64_t right) noexcept {
+    return right > std::numeric_limits<std::uint64_t>::max() - left
+               ? std::numeric_limits<std::uint64_t>::max()
+               : left + right;
+}
+
+}  // namespace
 
 RtpAudioStream::RtpAudioStream(RtpAudioStreamConfig config,
                                std::unique_ptr<audio::IAudioDecoder> decoder,
@@ -134,6 +145,7 @@ void RtpAudioStream::OnDatagram(const std::span<const std::byte> datagram,
         unexpected_source_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
+    const auto processing_started = std::chrono::steady_clock::now();
     constexpr std::uint8_t kRetransmittedPayloadType = 0x56U;
     const bool is_retransmitted =
         datagram.size() >= 2U &&
@@ -172,16 +184,49 @@ void RtpAudioStream::OnDatagram(const std::span<const std::byte> datagram,
         timeline_rejected_packets_.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
-    if (jitter_buffer_.Insert(*parsed, arrival_time_nanoseconds)) {
+    const auto inserted = jitter_buffer_.Insert(*parsed, arrival_time_nanoseconds);
+    const auto processing_nanoseconds = std::max<std::int64_t>(
+        0, std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now() - processing_started)
+               .count());
+    RecordPacketCost(std::max<std::uint64_t>(
+        1U, static_cast<std::uint64_t>((processing_nanoseconds + 999LL) / 1'000LL)));
+    if (inserted) {
         wake_.notify_one();
     }
 }
 
 AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
+    const auto jitter = jitter_buffer_.Diagnostics();
+    const auto timing = timing_engine_ ? timing_engine_->Diagnostics()
+                                       : timing::TimingDiagnostics{};
+    const auto feedback = sink_.Feedback();
+    const auto fallback_packet_duration =
+        static_cast<std::uint64_t>(config_.format.nominal_frames_per_packet) * 1'000'000U /
+        config_.format.sample_rate;
+    const auto packet_duration = jitter.observed_packet_duration_microseconds != 0U
+                                     ? jitter.observed_packet_duration_microseconds
+                                     : fallback_packet_duration;
+    const auto reserve_packets = jitter.target_packets > 0U ? jitter.target_packets - 1U : 0U;
+    const auto jitter_reserve = static_cast<std::uint64_t>(reserve_packets) * packet_duration;
+    const auto scheduled_reserve =
+        std::max(jitter_reserve,
+                 timing.enabled ? timing.target_buffer_microseconds : std::uint64_t{0U});
+    const auto decode_average =
+        decode_processing_average_microseconds_.load(std::memory_order_relaxed);
+    const auto packet_average =
+        packet_processing_average_microseconds_.load(std::memory_order_relaxed);
+    auto receiver_added = SaturatingAdd(scheduled_reserve, packet_average);
+    receiver_added = SaturatingAdd(receiver_added, decode_average);
+    receiver_added = SaturatingAdd(receiver_added, feedback.output_latency_microseconds);
     return AudioTransportDiagnostics{
         .configured = configured_.load(std::memory_order_acquire),
         .recording = recording_.load(std::memory_order_acquire),
         .connection_id = config_.connection_id,
+        .protocol_latency_frames = config_.protocol_latency_frames,
+        .protocol_latency_microseconds =
+            static_cast<std::uint64_t>(config_.protocol_latency_frames) * 1'000'000U /
+            config_.format.sample_rate,
         .datagrams_received = datagrams_received_.load(std::memory_order_relaxed),
         .datagram_bytes = datagram_bytes_.load(std::memory_order_relaxed),
         .invalid_rtp_packets = invalid_rtp_packets_.load(std::memory_order_relaxed),
@@ -205,11 +250,22 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .decoded_frames = decoded_frames_.load(std::memory_order_relaxed),
         .concealed_packets = concealed_packets_.load(std::memory_order_relaxed),
         .concealed_frames = concealed_frames_.load(std::memory_order_relaxed),
+        .packet_processing_average_microseconds = packet_average,
+        .packet_processing_maximum_microseconds =
+            packet_processing_maximum_microseconds_.load(std::memory_order_relaxed),
         .decoder_errors = decoder_errors_.load(std::memory_order_relaxed),
+        .decode_processing_average_microseconds = decode_average,
+        .decode_processing_maximum_microseconds =
+            decode_processing_maximum_microseconds_.load(std::memory_order_relaxed),
+        .decode_budget_miss_count =
+            decode_budget_miss_count_.load(std::memory_order_relaxed),
         .sink_backpressure_events = sink_backpressure_events_.load(std::memory_order_relaxed),
-        .jitter_buffer = jitter_buffer_.Diagnostics(),
-        .timing = timing_engine_ ? timing_engine_->Diagnostics()
-                                 : timing::TimingDiagnostics{},
+        .jitter_reserve_microseconds = jitter_reserve,
+        .scheduled_reserve_microseconds = scheduled_reserve,
+        .output_path_latency_microseconds = feedback.output_latency_microseconds,
+        .receiver_added_latency_estimate_microseconds = receiver_added,
+        .jitter_buffer = jitter,
+        .timing = timing,
         .last_error = last_error_.load(std::memory_order_relaxed),
     };
 }
@@ -235,6 +291,9 @@ void RtpAudioStream::ResetPacketTimeline(const AudioTimelineAnchor& anchor) noex
                 ? std::optional<std::uint64_t>{*anchor.rtp_timestamp}
                 : std::optional<std::uint64_t>{});
     }
+    jitter_buffer_.UpdateRuntimeConditions(
+        {.timing_locked = !timing_engine_ || timing_engine_->Diagnostics().locked,
+         .decode_margin_sufficient = false});
     timeline_resets_.fetch_add(1U, std::memory_order_relaxed);
 }
 
@@ -296,6 +355,7 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             return;
         }
 
+        const auto decode_started = std::chrono::steady_clock::now();
         audio::DecodeResult result;
         std::uint32_t rtp_timestamp = packet.timestamp;
         if (kind == JitterPopKind::Packet) {
@@ -320,6 +380,27 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
                 concealed_frames_.fetch_add(result.frame_count, std::memory_order_relaxed);
             }
         }
+        const auto decode_elapsed = std::chrono::steady_clock::now() - decode_started;
+        const auto decode_nanoseconds = std::max<std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::nanoseconds>(decode_elapsed).count());
+        const auto decode_microseconds = std::max<std::uint64_t>(
+            1U, static_cast<std::uint64_t>((decode_nanoseconds + 999LL) / 1'000LL));
+        const auto budget_frames = result.frame_count != 0U
+                                       ? result.frame_count
+                                       : config_.format.nominal_frames_per_packet;
+        const auto packet_duration_microseconds =
+            (static_cast<std::uint64_t>(budget_frames) * 1'000'000U +
+             config_.format.sample_rate - 1U) /
+            config_.format.sample_rate;
+        const auto decode_margin_sufficient =
+            result.status == audio::DecodeStatus::Ok && result.frame_count != 0U &&
+            decode_microseconds <= std::max<std::uint64_t>(
+                                       1U, packet_duration_microseconds / 2U);
+        RecordDecodeCost(decode_microseconds, decode_margin_sufficient);
+        const auto timing_locked = !timing_engine_ || timing_engine_->Diagnostics().locked;
+        jitter_buffer_.UpdateRuntimeConditions(
+            {.timing_locked = timing_locked,
+             .decode_margin_sufficient = decode_margin_sufficient});
         if (result.status != audio::DecodeStatus::Ok || result.frame_count == 0U) {
             decoder_errors_.fetch_add(1U, std::memory_order_relaxed);
             last_error_.store(6U, std::memory_order_relaxed);
@@ -363,6 +444,46 @@ bool RtpAudioStream::SubmitWithBackpressure(
         }
     }
     return false;
+}
+
+void RtpAudioStream::RecordDecodeCost(const std::uint64_t elapsed_microseconds,
+                                      const bool margin_sufficient) noexcept {
+    const auto bounded_elapsed = std::min<std::uint64_t>(elapsed_microseconds, 60'000'000U);
+    const auto current_average =
+        decode_processing_average_microseconds_.load(std::memory_order_relaxed);
+    const auto next_average = current_average == 0U
+                                  ? bounded_elapsed
+                                  : (current_average * 15U + bounded_elapsed + 8U) / 16U;
+    decode_processing_average_microseconds_.store(next_average,
+                                                  std::memory_order_relaxed);
+
+    auto current_maximum =
+        decode_processing_maximum_microseconds_.load(std::memory_order_relaxed);
+    while (bounded_elapsed > current_maximum &&
+           !decode_processing_maximum_microseconds_.compare_exchange_weak(
+               current_maximum, bounded_elapsed, std::memory_order_relaxed)) {
+    }
+    if (!margin_sufficient) {
+        decode_budget_miss_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+}
+
+void RtpAudioStream::RecordPacketCost(const std::uint64_t elapsed_microseconds) noexcept {
+    const auto bounded_elapsed = std::min<std::uint64_t>(elapsed_microseconds, 60'000'000U);
+    const auto current_average =
+        packet_processing_average_microseconds_.load(std::memory_order_relaxed);
+    const auto next_average = current_average == 0U
+                                  ? bounded_elapsed
+                                  : (current_average * 15U + bounded_elapsed + 8U) / 16U;
+    packet_processing_average_microseconds_.store(next_average,
+                                                  std::memory_order_relaxed);
+
+    auto current_maximum =
+        packet_processing_maximum_microseconds_.load(std::memory_order_relaxed);
+    while (bounded_elapsed > current_maximum &&
+           !packet_processing_maximum_microseconds_.compare_exchange_weak(
+               current_maximum, bounded_elapsed, std::memory_order_relaxed)) {
+    }
 }
 
 }  // namespace airplaywin::transport

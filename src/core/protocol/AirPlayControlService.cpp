@@ -374,6 +374,8 @@ transport::ControlReply AirPlayControlService::HandleRequest(
                         .connection_id = connection_id,
                         .peer_address = session_snapshot->peer_address,
                         .format = *context.audio_format,
+                        .protocol_latency_frames =
+                            transport::kClassicDevelopmentAudioLatencyFrames,
                         .client_control_port = parsed_transport->client_control_port,
                         .client_timing_port = parsed_transport->client_timing_port,
                     });
@@ -431,7 +433,9 @@ transport::ControlReply AirPlayControlService::HandleRequest(
             } else {
                 static_cast<void>(
                     sessions_.SetState(connection_id, session::SessionState::Streaming));
-                const std::array headers{Header{"Audio-Latency", "11025"}};
+                const std::array headers{Header{
+                    "Audio-Latency",
+                    std::to_string(transport::kClassicDevelopmentAudioLatencyFrames)}};
                 reply.writes.push_back(
                     StatusResponse(request, 200, "OK", headers, {}, close));
             }
