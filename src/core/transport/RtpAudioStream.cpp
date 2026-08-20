@@ -284,6 +284,12 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             !recording_.load(std::memory_order_acquire)) {
             return;
         }
+        const auto feedback = sink_.Feedback();
+        if (feedback.underrun_count > observed_sink_underruns_) {
+            jitter_buffer_.ReportDownstreamUnderrun(feedback.underrun_count -
+                                                    observed_sink_underruns_);
+            observed_sink_underruns_ = feedback.underrun_count;
+        }
         BufferedRtpPacket packet;
         const auto kind = jitter_buffer_.Pop(packet);
         if (kind == JitterPopKind::Waiting) {

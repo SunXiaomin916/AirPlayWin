@@ -11,8 +11,13 @@ namespace airplaywin::windows::audio {
 struct WasapiOutputOptions final {
     std::wstring device_id{};
     bool follow_default_device{true};
+    airplaywin::audio::AudioOutputMode output_mode{
+        airplaywin::audio::AudioOutputMode::Shared};
+    bool low_latency{false};
+    bool allow_shared_fallback{true};
     std::uint32_t ring_capacity_milliseconds{500U};
     std::uint32_t target_queue_milliseconds{30U};
+    std::int64_t endpoint_calibration_offset_microseconds{0};
 };
 
 class WasapiAudioOutput final : public airplaywin::audio::IAudioOutput {

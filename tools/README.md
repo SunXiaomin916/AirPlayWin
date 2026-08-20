@@ -17,5 +17,12 @@ replacement while retaining pause/resume, volume ramps, and stop/start. Runtime 
 transition counters and post-gate click/pop detector metrics. The deterministic 48 kHz waveform
 stress remains in the unit suite so it is independent of endpoint hardware.
 
+Phase 9 adds `--low-latency`, `--exclusive`, `--strict-exclusive`, and
+`--endpoint-offset-us`. The receiver reports the negotiated WASAPI path and every component of
+its latency model. `Measure-LoopbackLatency.ps1` invokes the WAVE capture analyzer in either
+dual-channel reference/return mode or known-stimulus-frame mode.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
-injector. Physical loopback latency and post-driver click/pop capture remain future tools.
+injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not
+pretend that QPC-only timing measures driver/DAC/analog latency; capture routing remains a
+hardware or external-recorder setup step.

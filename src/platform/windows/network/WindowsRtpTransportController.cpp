@@ -27,10 +27,19 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     const airplaywin::transport::AudioTransportSetupRequest& request) {
     using airplaywin::transport::AudioTransportSetupError;
     using airplaywin::transport::AudioTransportSetupResult;
+    const airplaywin::transport::RtpJitterBufferConfig jitter_config{
+        .capacity_packets = options_.jitter_capacity_packets,
+        .target_packets = options_.jitter_target_packets,
+        .clock_rate = request.format.sample_rate,
+        .adaptive_enabled = options_.enable_adaptive_jitter,
+        .minimum_target_packets = options_.jitter_minimum_packets,
+        .maximum_target_packets = options_.jitter_maximum_packets,
+        .stable_window_packets = options_.jitter_stable_window_packets,
+        .recovery_window_packets = options_.jitter_recovery_window_packets,
+    };
     if (request.connection_id == 0U || !request.format.IsValid() ||
         request.format.codec != airplaywin::audio::AudioCodec::PcmL16BigEndian ||
-        options_.jitter_capacity_packets < 4U || options_.jitter_target_packets == 0U ||
-        options_.jitter_target_packets >= options_.jitter_capacity_packets ||
+        !jitter_config.IsValid() ||
         (options_.enable_buffered_timing &&
          (options_.buffered_timing_milliseconds < 20U ||
           options_.buffered_timing_milliseconds > 2'000U))) {
@@ -60,10 +69,7 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         airplaywin::transport::RtpAudioStreamConfig{
             .connection_id = request.connection_id,
             .format = request.format,
-            .jitter_buffer =
-                {.capacity_packets = options_.jitter_capacity_packets,
-                 .target_packets = options_.jitter_target_packets,
-                 .clock_rate = request.format.sample_rate},
+            .jitter_buffer = jitter_config,
             .allowed_peer_ipv4_network_order = allowed_peer.s_addr,
         },
         std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink_,

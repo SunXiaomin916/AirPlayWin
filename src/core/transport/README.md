@@ -21,3 +21,9 @@ every decoded or concealed frame maps its RTP sampling timestamp to a target QPC
 crosses `IAudioFrameSink`. With the mode disabled, the established arrival-time behavior is
 unchanged. The reserved timing UDP socket is still isolated and counted; S7 does not parse or
 claim PTP timing traffic.
+
+Phase 9 optionally adapts the jitter target without changing sender timestamps or the negotiated
+presentation timeline. Stable input reduces the target by one learned packet duration per
+stable window; jitter p99, late/lost/overflow events, and downstream audio underruns increase it
+quickly. The state machine is `Warmup -> Locked -> LowLatency`, with `Degraded -> Recovery` for
+fault handling. All storage, including the 128-sample jitter percentile window, is fixed.

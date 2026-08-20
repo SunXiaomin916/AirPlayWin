@@ -72,6 +72,21 @@ enum class AudioTransitionState : std::uint8_t {
     DeviceMuted,
 };
 
+enum class AudioOutputMode : std::uint8_t {
+    Shared,
+    Exclusive,
+};
+
+enum class AudioClientPath : std::uint8_t {
+    Legacy,
+    AudioClient3,
+};
+
+enum class AudioEndpointSampleFormat : std::uint8_t {
+    Float32,
+    Pcm16,
+};
+
 struct AudioDiagnosticsSnapshot final {
     std::uint32_t current_buffer_depth_frames{0};
     std::uint64_t underrun_count{0};
@@ -92,6 +107,24 @@ struct AudioDiagnosticsSnapshot final {
     float click_pop_maximum_step{0.0F};
     float click_pop_recent_peak{0.0F};
     std::uint64_t output_latency_microseconds{0};
+    std::uint64_t software_queue_latency_microseconds{0};
+    std::uint64_t endpoint_padding_latency_microseconds{0};
+    std::uint64_t engine_latency_microseconds{0};
+    std::int64_t endpoint_calibration_offset_microseconds{0};
+    std::uint32_t endpoint_buffer_frames{0};
+    std::uint32_t engine_period_frames{0};
+    std::uint32_t queue_target_frames{0};
+    AudioOutputMode requested_output_mode{AudioOutputMode::Shared};
+    AudioOutputMode active_output_mode{AudioOutputMode::Shared};
+    AudioClientPath audio_client_path{AudioClientPath::Legacy};
+    AudioEndpointSampleFormat endpoint_sample_format{
+        AudioEndpointSampleFormat::Float32};
+    bool low_latency_requested{false};
+    bool low_latency_active{false};
+    bool output_mode_fallback{false};
+    std::uint32_t output_mode_fallback_error{0};
+    std::uint64_t render_wakeup_count{0};
+    std::uint64_t exclusive_start_timeouts{0};
     std::uint64_t device_switch_events{0};
     std::uint64_t device_recovery_attempts{0};
     std::uint64_t device_recovery_successes{0};

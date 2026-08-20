@@ -14,6 +14,11 @@ uses fixed per-channel state and atomics only. The detector reports adjacent-sam
 crossings and peak step sizes; it does not modify PCM and is not a replacement for physical
 loopback capture.
 
+`LoopbackLatencyAnalyzer` locates an impulse onset in a direct reference channel and a returned
+output channel, or compares one returned channel with a known stimulus frame. It is a pure,
+allocation-free analyzer over caller-owned samples. File parsing lives in the app layer so the
+core has no filesystem dependency.
+
 The render path must not allocate, format logs, perform file/network I/O, or acquire a mutex.
 All diagnostics are recorded as counters/atomic snapshots and formatted outside the render
 thread.

@@ -3,6 +3,7 @@
 #include <string_view>
 
 void TestAudioEngine();
+void TestAdaptiveJitterBuffer();
 void TestAntiPopStress();
 void TestAirPlayControlService();
 void TestAudioEpoch();
@@ -10,6 +11,8 @@ void TestAudioRingBuffer();
 void TestAudioTransitionGuard();
 void TestBufferedTiming();
 void TestClickPopDetector();
+void TestEndpointLatencyModel();
+void TestLoopbackLatency();
 void TestDiscovery();
 void TestIocpTcpServer();
 void TestIocpUdpReceiver();
@@ -27,6 +30,7 @@ void TestWindowsDiscovery();
 void TestWindowsAudioStreamIntegration();
 void TestWindowsPlatform();
 void TestWindowsRecovery();
+void TestWaveFileReader();
 
 namespace {
 
@@ -50,12 +54,15 @@ using TestFunction = void (*)();
 
 int main() {
     int failed = 0;
+    failed += Run("AdaptiveJitterBuffer", &TestAdaptiveJitterBuffer) ? 0 : 1;
     failed += Run("AntiPopStress", &TestAntiPopStress) ? 0 : 1;
     failed += Run("AudioEpoch", &TestAudioEpoch) ? 0 : 1;
     failed += Run("AudioRingBuffer", &TestAudioRingBuffer) ? 0 : 1;
     failed += Run("AudioTransitionGuard", &TestAudioTransitionGuard) ? 0 : 1;
     failed += Run("BufferedTiming", &TestBufferedTiming) ? 0 : 1;
     failed += Run("ClickPopDetector", &TestClickPopDetector) ? 0 : 1;
+    failed += Run("EndpointLatencyModel", &TestEndpointLatencyModel) ? 0 : 1;
+    failed += Run("LoopbackLatency", &TestLoopbackLatency) ? 0 : 1;
     failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
     failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
     failed += Run("PcmL16Decoder", &TestPcmL16Decoder) ? 0 : 1;
@@ -75,5 +82,6 @@ int main() {
     failed += Run("WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration) ? 0 : 1;
     failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
     failed += Run("WindowsRecovery", &TestWindowsRecovery) ? 0 : 1;
+    failed += Run("WaveFileReader", &TestWaveFileReader) ? 0 : 1;
     return failed == 0 ? 0 : 1;
 }

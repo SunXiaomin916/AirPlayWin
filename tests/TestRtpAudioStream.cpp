@@ -44,7 +44,12 @@ void TestRtpAudioStream() {
                        .nominal_frames_per_packet = 1U},
             .jitter_buffer = {.capacity_packets = 8U,
                               .target_packets = 2U,
-                              .clock_rate = 44'100U},
+                              .clock_rate = 44'100U,
+                              .adaptive_enabled = true,
+                              .minimum_target_packets = 1U,
+                              .maximum_target_packets = 6U,
+                              .stable_window_packets = 8U,
+                              .recovery_window_packets = 4U},
         },
         std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink};
     APW_EXPECT(stream.Start());
@@ -110,6 +115,18 @@ void TestRtpAudioStream() {
     stream.OnDatagram(wrapped_sequence1, source, 1'007'000'000LL);
     APW_EXPECT(WaitForFrames(sink, 7U));
     APW_EXPECT(stream.Diagnostics().timeline_rejected_packets == 1U);
+    sink.SetUnderrunCount(3U);
+    const auto feedback_packet = BuildRtpPacket(2U, 2U, positive);
+    stream.OnDatagram(feedback_packet, source, 1'008'000'000LL);
+    const auto feedback_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (stream.Diagnostics().jitter_buffer.downstream_underruns != 3U &&
+           std::chrono::steady_clock::now() < feedback_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    APW_EXPECT(stream.Diagnostics().jitter_buffer.downstream_underruns == 3U);
+    APW_EXPECT(stream.Diagnostics().jitter_buffer.adaptive_state ==
+               airplaywin::transport::AdaptiveJitterState::Degraded);
     stream.Stop();
     APW_EXPECT(sink.StopCount() == 1U);
 }

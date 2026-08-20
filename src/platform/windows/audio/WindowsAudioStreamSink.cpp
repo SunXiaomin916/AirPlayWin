@@ -199,6 +199,20 @@ void WindowsAudioStreamSink::Stop() noexcept {
     resume_after_prefill_ = false;
 }
 
+airplaywin::audio::AudioSinkFeedback WindowsAudioStreamSink::Feedback() const noexcept {
+    try {
+        std::scoped_lock lock{mutex_};
+        const auto output = engine_.Diagnostics();
+        return {
+            .queued_frames = output.current_buffer_depth_frames,
+            .underrun_count = output.underrun_count,
+            .output_latency_microseconds = output.output_latency_microseconds,
+        };
+    } catch (...) {
+        return {};
+    }
+}
+
 AudioStreamSinkDiagnostics WindowsAudioStreamSink::Diagnostics() const {
     std::scoped_lock lock{mutex_};
     return AudioStreamSinkDiagnostics{

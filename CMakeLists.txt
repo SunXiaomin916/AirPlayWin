@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.8.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.9.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -17,6 +17,7 @@ add_library(airplaywin_core STATIC
     src/core/audio/AudioRingBuffer.cpp
     src/core/audio/AudioTransitionGuard.cpp
     src/core/audio/ClickPopDetector.cpp
+    src/core/audio/LoopbackLatencyAnalyzer.cpp
     src/core/audio/PcmL16Decoder.cpp
     src/core/audio/TestSignalGenerator.cpp
     src/core/crypto/OpenSessionAuthenticator.cpp
@@ -42,6 +43,7 @@ target_compile_features(airplaywin_core PUBLIC cxx_std_23)
 airplaywin_set_warnings(airplaywin_core)
 
 add_library(airplaywin_windows STATIC
+    src/platform/windows/audio/EndpointLatencyModel.cpp
     src/platform/windows/audio/WasapiAudioOutput.cpp
     src/platform/windows/audio/WindowsAudioEngine.cpp
     src/platform/windows/audio/WindowsAudioStreamSink.cpp
@@ -66,7 +68,10 @@ target_link_libraries(airplaywin_windows
 )
 airplaywin_set_warnings(airplaywin_windows)
 
-add_executable(AirPlayWin src/app/main.cpp)
+add_executable(AirPlayWin
+    src/app/main.cpp
+    src/app/WaveFileReader.cpp
+)
 target_compile_features(AirPlayWin PRIVATE cxx_std_23)
 target_compile_definitions(AirPlayWin PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(AirPlayWin PRIVATE airplaywin_core airplaywin_windows)

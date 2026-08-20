@@ -1,12 +1,16 @@
 add_executable(airplaywin_tests
+    ../src/app/WaveFileReader.cpp
     test_main.cpp
     TestAntiPopStress.cpp
+    TestAdaptiveJitterBuffer.cpp
     TestAudioEngine.cpp
     TestAudioEpoch.cpp
     TestAudioRingBuffer.cpp
     TestAudioTransitionGuard.cpp
     TestBufferedTiming.cpp
     TestClickPopDetector.cpp
+    TestEndpointLatencyModel.cpp
+    TestLoopbackLatency.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
     TestIocpTcpServer.cpp
@@ -25,6 +29,7 @@ add_executable(airplaywin_tests
     TestWindowsAudioStreamIntegration.cpp
     TestWindowsPlatform.cpp
     TestWindowsRecovery.cpp
+    TestWaveFileReader.cpp
 )
 
 target_compile_features(airplaywin_tests PRIVATE cxx_std_23)

@@ -1,12 +1,14 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 8
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 9
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
 timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
 buffered RTP-to-QPC timing experiment. Phase 8 formalizes the bottom anti-pop path with an
-automatic waveform-discontinuity detector and 1,000-cycle regression harness. Pairing, Apple
-codec decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
+automatic waveform-discontinuity detector and 1,000-cycle regression harness. Phase 9 adds
+opt-in low-latency WASAPI paths, adaptive RTP buffering, and a capture-based latency analyzer.
+Pairing, Apple codec decoding, encryption, remote PTP, multi-room, and WinUI are not implemented
+yet.
 
 ## Phase 1 capabilities
 
@@ -133,6 +135,26 @@ codec decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
 - Epoch regression now cycles every required timeline-change reason 1,000 times and verifies
   that the previous epoch immediately becomes stale.
 
+## Phase 9 capabilities
+
+- Opt-in Shared low latency through `IAudioClient3::InitializeSharedAudioStream`, using the
+  endpoint's minimum supported engine period when the requested float32 format is accepted.
+- Event-driven Exclusive mode with float32 negotiation, PCM16 fallback, aligned-buffer retry,
+  strict failure or explicit Shared fallback, and a bounded first-render watchdog.
+- All Shared/Exclusive output still crosses the fixed ring, audio epoch checks,
+  `AudioTransitionGuard`, and post-gate click/pop detector; the render callback performs no
+  dynamic allocation, file/network I/O, logging, or long mutex hold.
+- Endpoint latency decomposition into software queue, current WASAPI padding, engine latency,
+  and a signed per-endpoint calibration offset.
+- Adaptive jitter targets with warmup, locked, low-latency, degraded, and recovery states;
+  stable traffic contracts slowly while jitter, loss, overflow, late packets, or downstream
+  audio underruns expand the reserve quickly.
+- PCM16/float32 RIFF/WAVE capture reader plus dual-channel or known-stimulus impulse-onset
+  analysis for physical/virtual loopback latency measurements.
+- CLI diagnostics expose requested/active output mode, client path, endpoint format, fallback
+  HRESULT, period, endpoint buffer, queue target, latency breakdown, adaptive target/state,
+  jitter p95/p99, and target-change counters.
+
 ## Architecture
 
 ```text
@@ -142,7 +164,7 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
                                            v
                       WindowsRtpTransportController -> IocpUdpReceiver
                                                         |
-                              RtpAudioStream <- RtpJitterBuffer
+                              RtpAudioStream <- adaptive RtpJitterBuffer
                                     | <-> ITimingEngine
                                     |      RTP time -> target QPC
                                     IAudioDecoder (L16)
@@ -160,7 +182,7 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
        | AudioTransitionGuard (unskippable render gate)
        | ClickPopDetector (post-gate, fixed storage)
        v
- WASAPI shared/event-driven endpoint
+ WASAPI Shared / IAudioClient3 / Exclusive event-driven endpoint
 ```
 
 The control service only calls `IAudioTransportController`; RTP callbacks only parse and queue;
@@ -224,7 +246,7 @@ ctest --preset debug
 Warnings are compiled as errors (`/W4 /WX`). No third-party packages are required in the
 current phases.
 
-Create the phase 8 x64 beta ZIP after the Release build:
+Create the phase 9 x64 beta ZIP after the Release build:
 
 ```powershell
 cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
@@ -252,6 +274,19 @@ Play on a selected endpoint (copy the endpoint ID from `--list-devices`):
 ```powershell
 .\build\vs2022-x64\Debug\AirPlayWin.exe --play --device "{endpoint-id}" --signal sweep --duration 30
 ```
+
+Request the minimum-period Shared path, or strict Exclusive mode:
+
+```powershell
+.\build\vs2022-x64\Release\AirPlayWin.exe --play --low-latency --signal 440 --duration 30
+.\build\vs2022-x64\Release\AirPlayWin.exe --play --exclusive --strict-exclusive `
+    --signal 440 --duration 30
+```
+
+Without `--strict-exclusive`, an unsupported/busy Exclusive endpoint falls back to Shared mode
+and reports both the active path and fallback HRESULT. `--endpoint-offset-us` applies a measured
+signed endpoint calibration correction to the latency model; it is not a substitute for a
+physical capture.
 
 Run a 30-minute local soak:
 
@@ -317,6 +352,22 @@ and retransmission-wrapped L16 packets:
 .\tools\packet_replay\rtp_l16_replay.ps1 -Port <negotiated-server-port> `
     -DropEvery 25 -DuplicateEvery 40 -ReorderPairs
 ```
+
+Enable the S9 adaptive jitter policy and low-latency output path with `--serve --low-latency`.
+Add `--exclusive` to request Exclusive WASAPI. This changes local buffering/output behavior but
+does not add PTP, codec, pairing, or encryption capabilities to the advertised protocol.
+
+Analyze a dual-channel WAVE capture whose channel 0 contains the direct emitted impulse and
+channel 1 contains the physical/virtual loopback return:
+
+```powershell
+.\build\vs2022-x64\Release\AirPlayWin.exe --analyze-loopback .\capture.wav `
+    --reference-channel 0 --output-channel 1
+```
+
+The equivalent PowerShell wrapper is `tools\Measure-LoopbackLatency.ps1`. A real cable,
+loopback-capable interface, external recorder, or calibrated virtual route is required to make
+a receiver-added-latency acceptance claim.
 
 Inspect the two program-scoped Private-profile rules without changing the machine:
 
@@ -427,11 +478,35 @@ tested endpoint reported an approximately 23 ms latency estimate and the process
 CPack generated `AirPlayWin-0.8.0-windows-x64.zip`; the Release executable, installer scripts,
 installer guide, and project README entries were inspected in the archive.
 
+Phase 9 adds three core/platform test groups for adaptive jitter, endpoint latency modeling,
+and impulse-onset analysis, plus a RIFF/WAVE reader test. Debug and Release x64 builds pass with
+`/W4 /WX`; all 29 test modules pass, and the final Release suite passed 50/50 repeated runs. The
+final Debug and Release CTest runs also pass.
+
+On the development Realtek endpoint, strict Exclusive mode negotiated PCM16 at 48 kHz with a
+160-frame (3.33 ms) period. A 10-second 440 Hz run rendered 482,080 frames with zero underruns,
+zero click/pop events, and a 13 ms software estimate while audible. The same path completed 100
+combined transition cycles with zero underruns, zero stale-epoch buffers, zero numeric faults,
+and zero click/pop events. On the active NVIDIA HDMI endpoint, Shared `IAudioClient3` negotiated
+a 480-frame period, remained active without fallback for 10 seconds, and reported zero
+underruns; its uncalibrated model was 32 ms (10 ms queue + 12 ms padding + 10 ms engine).
+
+The default Realtek Shared endpoint rejects the requested float32 minimum-period format with
+`0x88890008`; the implementation reopens it on the legacy Shared path and exposes that fallback
+instead of failing or silently claiming low latency. No synchronized physical loopback capture
+was available in this run, so the document's receiver-added-latency threshold is not claimed as
+physically accepted from QPC/model estimates alone.
+
+CPack generated `AirPlayWin-0.9.0-windows-x64.zip`; its executable, project README, installer
+guide, and install/uninstall scripts were inspected in the archive.
+
 ## Current boundary
 
-Shared mode remains the only enabled WASAPI mode. The backend uses the application format
-with the Windows audio engine's shared-mode format converter. Exclusive mode and
-`IAudioClient3` minimum-period tuning remain later audio-backend work.
+Shared mode remains the default. `--low-latency` opts into `IAudioClient3` when the endpoint
+accepts the requested format and otherwise reports a legacy Shared fallback. `--exclusive`
+opts into the event-driven Exclusive path and may negotiate PCM16; strict mode disables Shared
+fallback. Latency values printed during playback are a decomposed software model. A physical or
+calibrated loopback WAVE capture is required for receiver-added-latency acceptance.
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
 absent pairing, crypto, PTP, or Apple codec modules. Phase 7 adds only a local single-stream
@@ -439,7 +514,7 @@ buffered timing experiment and does not expand advertised media/security capabil
 adds output-safety validation only and likewise changes no advertised protocol capability.
 Phase 5 accepts inbound retransmitted audio on the control port, but it does not originate resend
 requests or implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
-encryption, codec, and timing work; physical iPhone/iPad/Mac interoperability is therefore not
+encryption, codec, and remote-timing work; physical iPhone/iPad/Mac interoperability is therefore not
 claimed in this phase.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
@@ -449,3 +524,5 @@ See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) 
 [phase 6](docs/phase-6.md) for lifecycle recovery, diagnostics, and beta deployment, and
 [phase 7](docs/phase-7.md) for the buffered RTP-to-QPC timing experiment, and
 [phase 8](docs/phase-8.md) for anti-pop invariants and waveform regression.
+See [phase 9](docs/phase-9.md) for low-latency WASAPI, adaptive buffering, diagnostics, and the
+physical measurement boundary.

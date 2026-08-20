@@ -2,21 +2,27 @@
 #include <fcntl.h>
 #include <io.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
-#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
 
+#include "core/audio/LoopbackLatencyAnalyzer.h"
 #include "core/audio/TestSignalGenerator.h"
 #include "core/crypto/OpenSessionAuthenticator.h"
 #include "core/discovery/AirPlayServiceRecords.h"
@@ -33,10 +39,13 @@
 #include "platform/windows/system/WindowsFirewallManager.h"
 #include "platform/windows/system/WindowsPowerEventMonitor.h"
 #include "platform/windows/timing/QpcClock.h"
+#include "app/WaveFileReader.h"
 
 namespace {
 
 using airplaywin::audio::AudioFormat;
+using airplaywin::audio::AudioClientPath;
+using airplaywin::audio::AudioOutputMode;
 using airplaywin::audio::AudioTransitionState;
 using airplaywin::audio::TestSignal;
 using airplaywin::audio::TestSignalGenerator;
@@ -74,6 +83,56 @@ using airplaywin::windows::timing::QpcClock;
         return L"safe-mute";
     case AudioTransitionState::DeviceMuted:
         return L"device-muted";
+    }
+    return L"unknown";
+}
+
+[[nodiscard]] std::wstring_view OutputModeName(const AudioOutputMode mode) noexcept {
+    return mode == AudioOutputMode::Exclusive ? L"exclusive" : L"shared";
+}
+
+[[nodiscard]] std::wstring_view AudioClientPathName(const AudioClientPath path) noexcept {
+    return path == AudioClientPath::AudioClient3 ? L"IAudioClient3" : L"legacy";
+}
+
+[[nodiscard]] std::wstring_view EndpointSampleFormatName(
+    const airplaywin::audio::AudioEndpointSampleFormat format) noexcept {
+    return format == airplaywin::audio::AudioEndpointSampleFormat::Pcm16 ? L"pcm16"
+                                                                         : L"float32";
+}
+
+[[nodiscard]] std::wstring_view AdaptiveJitterStateName(
+    const airplaywin::transport::AdaptiveJitterState state) noexcept {
+    using airplaywin::transport::AdaptiveJitterState;
+    switch (state) {
+    case AdaptiveJitterState::Warmup:
+        return L"warmup";
+    case AdaptiveJitterState::Locked:
+        return L"locked";
+    case AdaptiveJitterState::LowLatency:
+        return L"low-latency";
+    case AdaptiveJitterState::Degraded:
+        return L"degraded";
+    case AdaptiveJitterState::Recovery:
+        return L"recovery";
+    }
+    return L"unknown";
+}
+
+[[nodiscard]] std::wstring_view LoopbackStatusName(
+    const airplaywin::audio::LoopbackLatencyStatus status) noexcept {
+    using airplaywin::audio::LoopbackLatencyStatus;
+    switch (status) {
+    case LoopbackLatencyStatus::Ok:
+        return L"ok";
+    case LoopbackLatencyStatus::InvalidConfiguration:
+        return L"invalid-configuration";
+    case LoopbackLatencyStatus::ReferenceOnsetNotFound:
+        return L"reference-onset-not-found";
+    case LoopbackLatencyStatus::OutputOnsetNotFound:
+        return L"output-onset-not-found";
+    case LoopbackLatencyStatus::LatencyOutOfRange:
+        return L"latency-out-of-range";
     }
     return L"unknown";
 }
@@ -124,14 +183,26 @@ struct CommandLine final {
     bool lifecycle_smoke{false};
     bool run_until_stopped{false};
     bool experimental_buffered_timing{false};
+    bool low_latency{false};
+    bool exclusive_audio{false};
+    bool strict_exclusive{false};
+    bool analyze_loopback{false};
     std::uint32_t buffered_timing_milliseconds{120U};
+    std::filesystem::path loopback_capture_path{};
+    std::uint32_t loopback_reference_channel{0U};
+    std::uint32_t loopback_output_channel{1U};
+    bool loopback_reference_channel_set{false};
+    bool loopback_output_channel_set{false};
+    std::optional<std::uint64_t> loopback_stimulus_frame{};
     std::wstring device_id{};
+    std::int64_t endpoint_calibration_offset_microseconds{0};
     std::wstring discovery_name{L"AirPlayWin"};
     airplaywin::discovery::DeviceId discovery_device_id{};
     std::uint16_t raop_port{5'000U};
     std::uint16_t airplay_port{7'000U};
     bool include_virtual_interfaces{false};
     TestSignal signal{TestSignal::Sine440Hz};
+    std::uint32_t sample_rate{48'000U};
     std::uint32_t duration_seconds{10U};
     std::uint32_t diagnostics_interval_seconds{1U};
     std::uint32_t transition_cycles{0U};
@@ -139,38 +210,80 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-8 anti-pop validation\n\n"
+        << L"AirPlayWin phase-9 low-latency validation\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
-        << L"             [--duration <seconds>] [--transition-cycles <count>]\n\n"
+        << L"             [--sample-rate <8000..384000>] [--duration <seconds>]\n"
+        << L"             [--transition-cycles <count>]\n"
+        << L"             [--low-latency] [--exclusive [--strict-exclusive]]\n"
+        << L"             [--endpoint-offset-us <-1000000..1000000>]\n"
         << L"             [--diagnostics-interval <seconds>]\n\n"
         << L"  AirPlayWin --discover [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --serve [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--device <endpoint-id>]\n"
+        << L"             [--low-latency] [--exclusive [--strict-exclusive]]\n"
+        << L"             [--endpoint-offset-us <-1000000..1000000>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
         << L"             [--experimental-buffered-timing [--buffered-timing-ms <20..2000>]]\n"
         << L"             [--include-virtual-interfaces]\n\n"
+        << L"  AirPlayWin --analyze-loopback <capture.wav>\n"
+        << L"             [--reference-channel <index> --output-channel <index>]\n"
+        << L"             [--stimulus-frame <frame> --output-channel <index>]\n\n"
         << L"  AirPlayWin --firewall-status [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --install-firewall-rules [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --remove-firewall-rules\n\n"
         << L"Examples:\n"
         << L"  AirPlayWin --play --signal 440 --duration 1800\n"
         << L"  AirPlayWin --play --device \"{endpoint-id}\" --transition-cycles 1000\n"
+        << L"  AirPlayWin --play --low-latency --exclusive --signal 440\n"
+        << L"  AirPlayWin --analyze-loopback capture.wav --reference-channel 0 --output-channel 1\n"
         << L"  AirPlayWin --discover --name \"Living Room PC\" --duration 300\n"
         << L"  AirPlayWin --serve --name \"Living Room PC\" --duration 300\n";
 }
 
+[[nodiscard]] bool ParseSignedMicroseconds(const wchar_t* const text,
+                                           std::int64_t& value) {
+    errno = 0;
+    wchar_t* end = nullptr;
+    const auto parsed = std::wcstoll(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != L'\0' ||
+        parsed < -1'000'000LL || parsed > 1'000'000LL) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
 [[nodiscard]] bool ParseUnsigned(const wchar_t* const text, std::uint32_t& value) {
+    if (text == nullptr || *text == L'\0' || *text == L'-') {
+        return false;
+    }
+    errno = 0;
     wchar_t* end = nullptr;
     const auto parsed = std::wcstoul(text, &end, 10);
-    if (end == text || *end != L'\0' || parsed > UINT32_MAX) {
+    if (errno == ERANGE || end == text || *end != L'\0' ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
         return false;
     }
     value = static_cast<std::uint32_t>(parsed);
+    return true;
+}
+
+[[nodiscard]] bool ParseUnsigned64(const wchar_t* const text, std::uint64_t& value) {
+    if (text == nullptr || *text == L'\0' || *text == L'-') {
+        return false;
+    }
+    errno = 0;
+    wchar_t* end = nullptr;
+    const auto parsed = std::wcstoull(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != L'\0') {
+        return false;
+    }
+    value = parsed;
     return true;
 }
 
@@ -225,6 +338,41 @@ void PrintUsage() {
             command.run_until_stopped = true;
         } else if (argument == L"--experimental-buffered-timing") {
             command.experimental_buffered_timing = true;
+        } else if (argument == L"--low-latency") {
+            command.low_latency = true;
+        } else if (argument == L"--exclusive") {
+            command.exclusive_audio = true;
+            command.low_latency = true;
+        } else if (argument == L"--strict-exclusive") {
+            command.strict_exclusive = true;
+            command.exclusive_audio = true;
+            command.low_latency = true;
+        } else if (argument == L"--analyze-loopback" && index + 1 < argc) {
+            command.analyze_loopback = true;
+            command.loopback_capture_path = argv[++index];
+        } else if (argument == L"--reference-channel" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index], command.loopback_reference_channel) ||
+                command.loopback_reference_channel > 7U) {
+                return false;
+            }
+            command.loopback_reference_channel_set = true;
+        } else if (argument == L"--output-channel" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index], command.loopback_output_channel) ||
+                command.loopback_output_channel > 7U) {
+                return false;
+            }
+            command.loopback_output_channel_set = true;
+        } else if (argument == L"--stimulus-frame" && index + 1 < argc) {
+            std::uint64_t stimulus_frame = 0U;
+            if (!ParseUnsigned64(argv[++index], stimulus_frame)) {
+                return false;
+            }
+            command.loopback_stimulus_frame = stimulus_frame;
+        } else if (argument == L"--endpoint-offset-us" && index + 1 < argc) {
+            if (!ParseSignedMicroseconds(
+                    argv[++index], command.endpoint_calibration_offset_microseconds)) {
+                return false;
+            }
         } else if (argument == L"--buffered-timing-ms" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index], command.buffered_timing_milliseconds) ||
                 command.buffered_timing_milliseconds < 20U ||
@@ -255,6 +403,11 @@ void PrintUsage() {
             if (!ParseSignal(argv[++index], command.signal)) {
                 return false;
             }
+        } else if (argument == L"--sample-rate" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index], command.sample_rate) ||
+                command.sample_rate < 8'000U || command.sample_rate > 384'000U) {
+                return false;
+            }
         } else if (argument == L"--duration" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index], command.duration_seconds) ||
                 command.duration_seconds == 0U) {
@@ -278,13 +431,32 @@ void PrintUsage() {
                                    static_cast<unsigned>(command.remove_firewall_rules);
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
         (command.run_until_stopped && !command.serve) ||
-        (command.experimental_buffered_timing && !command.serve)) {
+        (command.experimental_buffered_timing && !command.serve) ||
+        (command.low_latency && !command.play && !command.serve) ||
+        (command.strict_exclusive && !command.exclusive_audio)) {
         return false;
     }
     if (firewall_commands != 0U &&
         (command.play || command.discover || command.serve || command.list_devices ||
          command.list_network_interfaces)) {
         return false;
+    }
+    if (command.analyze_loopback &&
+        (command.play || command.discover || command.serve || command.list_devices ||
+         command.list_network_interfaces || firewall_commands != 0U ||
+         command.loopback_capture_path.empty() ||
+         (command.loopback_stimulus_frame.has_value() &&
+          command.loopback_reference_channel_set))) {
+        return false;
+    }
+    if (!command.analyze_loopback &&
+        (command.loopback_reference_channel_set || command.loopback_output_channel_set ||
+         command.loopback_stimulus_frame.has_value())) {
+        return false;
+    }
+    if (command.analyze_loopback && command.loopback_stimulus_frame.has_value() &&
+        !command.loopback_output_channel_set) {
+        command.loopback_output_channel = 0U;
     }
     return true;
 }
@@ -382,16 +554,50 @@ void ListNetworkInterfaces(const bool include_virtual_interfaces) {
     }
 }
 
+[[nodiscard]] int RunLoopbackAnalysis(const CommandLine& command) {
+    airplaywin::app::WaveCapture capture;
+    std::wstring error;
+    if (!airplaywin::app::ReadWaveCapture(command.loopback_capture_path, capture, error)) {
+        std::wcerr << L"Loopback capture read failed: " << error << L".\n";
+        return 25;
+    }
+    airplaywin::audio::LoopbackLatencyConfig config{
+        .sample_rate = capture.sample_rate,
+        .channel_count = capture.channel_count,
+        .reference_channel = command.loopback_stimulus_frame.has_value()
+                                 ? std::optional<std::uint16_t>{}
+                                 : std::optional<std::uint16_t>{
+                                       static_cast<std::uint16_t>(
+                                           command.loopback_reference_channel)},
+        .known_stimulus_frame = command.loopback_stimulus_frame,
+        .output_channel = static_cast<std::uint16_t>(command.loopback_output_channel),
+    };
+    const auto result = airplaywin::audio::LoopbackLatencyAnalyzer::Analyze(
+        capture.interleaved_samples, config);
+    std::wcout << L"loopback_status=" << LoopbackStatusName(result.status)
+               << L", sample_rate=" << capture.sample_rate
+               << L", channels=" << capture.channel_count
+               << L", reference_frame=" << result.reference_onset_frame
+               << L", output_frame=" << result.output_onset_frame
+               << L", latency_frames=" << result.latency_frames
+               << L", latency_us=" << result.latency_microseconds
+               << L", reference_peak=" << result.reference_peak
+               << L", output_peak=" << result.output_peak << L"\n";
+    return result.Succeeded() ? 0 : 26;
+}
+
 [[nodiscard]] bool SubmitBlock(WindowsAudioEngine& engine,
                                TestSignalGenerator& generator,
                                std::span<float> block,
                                const std::uint32_t frames) {
     generator.Fill(block, frames);
-    for (std::uint32_t retry = 0U; retry < 1'000U; ++retry) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
         if (engine.Submit(block, frames, QpcClock::Now())) {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::yield();
     }
     return false;
 }
@@ -404,6 +610,37 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
                << L", stale_epoch=" << diagnostics.dropped_stale_epoch_buffers
                << L", latency_est=" << diagnostics.output_latency_microseconds / 1'000U
                << L" ms, epoch=" << diagnostics.current_audio_epoch
+               << L"\n  output: requested="
+               << OutputModeName(diagnostics.requested_output_mode)
+               << L", active=" << OutputModeName(diagnostics.active_output_mode)
+               << L", client=" << AudioClientPathName(diagnostics.audio_client_path)
+               << L", endpoint_format="
+               << EndpointSampleFormatName(diagnostics.endpoint_sample_format)
+               << L", low_latency="
+               << (diagnostics.low_latency_active ? L"active" : L"inactive")
+               << L", fallback="
+               << (diagnostics.output_mode_fallback ? L"yes" : L"no")
+               << L", fallback_error=0x" << std::hex
+               << diagnostics.output_mode_fallback_error
+               << L", output_error=0x" << diagnostics.last_output_error << std::dec
+               << L", recovering="
+               << (diagnostics.output_recovering ? L"yes" : L"no")
+               << L", recovery(attempt/success/fail)="
+               << diagnostics.device_recovery_attempts << L"/"
+               << diagnostics.device_recovery_successes << L"/"
+               << diagnostics.device_recovery_failures
+               << L", wakeups=" << diagnostics.render_wakeup_count
+               << L", exclusive_start_timeouts="
+               << diagnostics.exclusive_start_timeouts
+               << L", endpoint_buffer=" << diagnostics.endpoint_buffer_frames
+               << L", period=" << diagnostics.engine_period_frames
+               << L", queue_target=" << diagnostics.queue_target_frames << L" frames"
+               << L"\n  latency_breakdown_us: queue="
+               << diagnostics.software_queue_latency_microseconds
+               << L", padding=" << diagnostics.endpoint_padding_latency_microseconds
+               << L", engine=" << diagnostics.engine_latency_microseconds
+               << L", calibration="
+               << diagnostics.endpoint_calibration_offset_microseconds
                << L"\n  transition=" << TransitionStateName(diagnostics.transition_state)
                << L", requests=" << diagnostics.transition_requests
                << L", fade_in=" << diagnostics.fade_in_events
@@ -423,23 +660,46 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
 }
 
 [[nodiscard]] int RunProbe(const CommandLine& command) {
-    const AudioFormat format{.sample_rate = 48'000U, .channel_count = 2U};
+    const AudioFormat format{.sample_rate = command.sample_rate, .channel_count = 2U};
     WindowsAudioEngine engine{WasapiOutputOptions{
         .device_id = command.device_id,
         .follow_default_device = command.device_id.empty(),
+        .output_mode = command.exclusive_audio ? AudioOutputMode::Exclusive
+                                               : AudioOutputMode::Shared,
+        .low_latency = command.low_latency,
+        .allow_shared_fallback = !command.strict_exclusive,
         .ring_capacity_milliseconds = 500U,
-        .target_queue_milliseconds = 15U,
+        .target_queue_milliseconds = command.exclusive_audio
+                                         ? 10U
+                                         : (command.low_latency ? 5U : 15U),
+        .endpoint_calibration_offset_microseconds =
+            command.endpoint_calibration_offset_microseconds,
     }};
     if (!engine.Open(format)) {
-        std::wcerr << L"Failed to open the selected WASAPI render endpoint.\n";
+        const auto diagnostics = engine.Diagnostics();
+        std::wcerr << L"Failed to open the selected WASAPI render endpoint, error=0x"
+                   << std::hex << diagnostics.last_output_error << std::dec << L".\n";
         return 2;
     }
-    constexpr std::uint32_t kBlockFrames = 240U;
-    std::vector<float> samples(static_cast<std::size_t>(kBlockFrames) * format.channel_count);
+    const auto output_configuration = engine.Diagnostics();
+    const auto block_frames = command.low_latency &&
+                                      output_configuration.engine_period_frames != 0U
+                                  ? output_configuration.engine_period_frames
+                                  : 240U;
+    std::vector<float> samples(static_cast<std::size_t>(block_frames) *
+                               format.channel_count);
     TestSignalGenerator generator{format, command.signal};
-    for (std::uint32_t block = 0U; block < 2U; ++block) {
-        if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+    const auto configured_prefill = command.low_latency
+                                        ? output_configuration.queue_target_frames
+                                        : 2U * block_frames;
+    const auto prefill_blocks = command.low_latency
+                                    ? std::max(1U, (configured_prefill + block_frames - 1U) /
+                                                       block_frames)
+                                    : 2U;
+    for (std::uint32_t block = 0U; block < prefill_blocks; ++block) {
+        if (!SubmitBlock(engine, generator, samples, block_frames)) {
             std::wcerr << L"Failed to prefill the WASAPI queue.\n";
+            PrintDiagnostics(engine);
             engine.Close();
             return 3;
         }
@@ -453,7 +713,7 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
     if (command.transition_cycles != 0U) {
         for (std::uint32_t cycle = 0U; cycle < command.transition_cycles; ++cycle) {
             for (std::uint32_t block = 0U; block < 20U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM submission stalled during transition cycle " << cycle
                                << L".\n";
                     engine.Close();
@@ -464,7 +724,7 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             engine.Resume();
             for (std::uint32_t block = 0U; block < 4U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM submission stalled after resume in cycle " << cycle
                                << L".\n";
                     engine.Close();
@@ -473,7 +733,7 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             }
             engine.SetVolume(0.0F);
             for (std::uint32_t block = 0U; block < 4U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM submission stalled during volume-down in cycle " << cycle
                                << L".\n";
                     engine.Close();
@@ -482,7 +742,7 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             }
             engine.SetVolume(1.0F);
             for (std::uint32_t block = 0U; block < 4U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM submission stalled during volume-up in cycle " << cycle
                                << L".\n";
                     engine.Close();
@@ -507,7 +767,7 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(15));
             for (std::uint32_t block = 0U; block < 5U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM submission stalled after timeline reset in cycle "
                                << cycle
                                << L".\n";
@@ -517,8 +777,8 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             }
             engine.Stop();
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            for (std::uint32_t block = 0U; block < 2U; ++block) {
-                if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+            for (std::uint32_t block = 0U; block < prefill_blocks; ++block) {
+                if (!SubmitBlock(engine, generator, samples, block_frames)) {
                     std::wcerr << L"PCM prefill stalled before restart in cycle " << cycle
                                << L".\n";
                     engine.Close();
@@ -542,8 +802,9 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
             std::chrono::seconds(command.diagnostics_interval_seconds);
         auto next_diagnostics = std::chrono::steady_clock::now() + diagnostics_interval;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (!SubmitBlock(engine, generator, samples, kBlockFrames)) {
+            if (!SubmitBlock(engine, generator, samples, block_frames)) {
                 std::wcerr << L"PCM submission stalled.\n";
+                PrintDiagnostics(engine);
                 engine.Close();
                 return 12;
             }
@@ -666,6 +927,21 @@ void PrintControlDiagnostics(
                << L", reordered=" << transport.jitter_buffer.reordered_packets
                << L", jitter_us="
                << transport.jitter_buffer.interarrival_jitter_microseconds
+               << L", adaptive="
+               << (transport.jitter_buffer.adaptive_enabled ? L"yes" : L"no")
+               << L", jitter_state="
+               << AdaptiveJitterStateName(transport.jitter_buffer.adaptive_state)
+               << L", target(min/current/max)="
+               << transport.jitter_buffer.minimum_target_packets << L"/"
+               << transport.jitter_buffer.target_packets << L"/"
+               << transport.jitter_buffer.maximum_target_packets
+               << L", p95/p99_us=" << transport.jitter_buffer.jitter_p95_microseconds
+               << L"/" << transport.jitter_buffer.jitter_p99_microseconds
+               << L", target_up/down="
+               << transport.jitter_buffer.target_increase_events << L"/"
+               << transport.jitter_buffer.target_decrease_events
+               << L", downstream_underruns="
+               << transport.jitter_buffer.downstream_underruns
                << L", timeline_resets=" << transport.timeline_resets
                << L", anchor_seq="
                << (transport.has_sequence_anchor
@@ -701,6 +977,19 @@ void PrintControlDiagnostics(
                << L", queue_frames=" << audio.output.current_buffer_depth_frames
                << L", underruns=" << audio.output.underrun_count
                << L", latency_us=" << audio.output.output_latency_microseconds
+               << L", output=" << OutputModeName(audio.output.active_output_mode)
+               << L", client=" << AudioClientPathName(audio.output.audio_client_path)
+               << L", endpoint_format="
+               << EndpointSampleFormatName(audio.output.endpoint_sample_format)
+               << L", period_frames=" << audio.output.engine_period_frames
+               << L", queue_target_frames=" << audio.output.queue_target_frames
+               << L", low_latency="
+               << (audio.output.low_latency_active ? L"active" : L"inactive")
+               << L", fallback="
+               << (audio.output.output_mode_fallback ? L"yes" : L"no")
+               << L", wakeups=" << audio.output.render_wakeup_count
+               << L", exclusive_start_timeouts="
+               << audio.output.exclusive_start_timeouts
                << L", transition=" << TransitionStateName(audio.output.transition_state)
                << L", transition_requests=" << audio.output.transition_requests
                << L", fade(in/out)=" << audio.output.fade_in_events << L"/"
@@ -750,10 +1039,22 @@ void PrintRecoveryDiagnostics(
     WindowsAudioStreamSink audio_sink{WasapiOutputOptions{
         .device_id = command.device_id,
         .follow_default_device = command.device_id.empty(),
-    }};
+        .output_mode = command.exclusive_audio ? AudioOutputMode::Exclusive
+                                               : AudioOutputMode::Shared,
+        .low_latency = command.low_latency,
+        .allow_shared_fallback = !command.strict_exclusive,
+        .ring_capacity_milliseconds = 500U,
+        .target_queue_milliseconds = command.exclusive_audio
+                                         ? 10U
+                                         : (command.low_latency ? 5U : 30U),
+        .endpoint_calibration_offset_microseconds =
+            command.endpoint_calibration_offset_microseconds,
+    }, command.exclusive_audio ? 10U : (command.low_latency ? 5U : 20U),
+       command.low_latency ? 15U : 30U};
     WindowsRtpTransportController media_transport{
         audio_sink,
-        {.enable_buffered_timing = command.experimental_buffered_timing,
+        {.enable_adaptive_jitter = command.low_latency,
+         .enable_buffered_timing = command.experimental_buffered_timing,
          .buffered_timing_milliseconds = command.buffered_timing_milliseconds}};
     airplaywin::protocol::AirPlayControlService control{
         authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
@@ -921,8 +1222,12 @@ int wmain(const int argc, wchar_t* argv[]) {
     if (firewall_command) {
         return RunFirewallCommand(command);
     }
+    if (command.analyze_loopback) {
+        return RunLoopbackAnalysis(command);
+    }
     if (command.list_devices || (!command.play && !command.discover && !command.serve &&
-                                 !command.list_network_interfaces)) {
+                                 !command.list_network_interfaces &&
+                                 !command.analyze_loopback)) {
         ListDevices();
     }
     if (command.list_network_interfaces) {

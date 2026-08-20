@@ -87,6 +87,7 @@ private:
     std::atomic<std::uint64_t> concealed_frames_{0U};
     std::atomic<std::uint64_t> decoder_errors_{0U};
     std::atomic<std::uint64_t> sink_backpressure_events_{0U};
+    std::uint64_t observed_sink_underruns_{0U};
     std::atomic<std::uint32_t> last_error_{0U};
 };
 

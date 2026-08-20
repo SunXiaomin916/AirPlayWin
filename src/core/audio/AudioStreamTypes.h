@@ -59,4 +59,10 @@ struct DecodedAudioFrameView final {
     bool concealed{false};
 };
 
+struct AudioSinkFeedback final {
+    std::uint32_t queued_frames{0U};
+    std::uint64_t underrun_count{0U};
+    std::uint64_t output_latency_microseconds{0U};
+};
+
 }  // namespace airplaywin::audio
