@@ -326,9 +326,19 @@ public:
             .dc_offset_events = guard_ != nullptr ? guard_->DcOffsetEvents() : 0U,
             .output_latency_microseconds =
                 output_latency_microseconds_.load(std::memory_order_relaxed),
+            .device_switch_events = device_switch_events_.load(std::memory_order_relaxed),
+            .device_recovery_attempts =
+                device_recovery_attempts_.load(std::memory_order_relaxed),
+            .device_recovery_successes =
+                device_recovery_successes_.load(std::memory_order_relaxed),
+            .device_recovery_failures =
+                device_recovery_failures_.load(std::memory_order_relaxed),
             .current_device_id = {},
             .current_sample_rate = format_.sample_rate,
             .current_audio_epoch = current_epoch_.load(std::memory_order_acquire),
+            .last_output_error =
+                static_cast<std::uint32_t>(last_error_.load(std::memory_order_relaxed)),
+            .output_recovering = output_recovering_.load(std::memory_order_acquire),
             .transition_state =
                 guard_ != nullptr ? guard_->State() : AudioTransitionState::Stopped,
         };
@@ -617,6 +627,8 @@ private:
             }
             if (wait_result == WAIT_OBJECT_0 + 1U) {
                 if (recovery == RecoveryState::Normal) {
+                    device_switch_events_.fetch_add(1U, std::memory_order_relaxed);
+                    output_recovering_.store(true, std::memory_order_release);
                     if (guard_ != nullptr) {
                         guard_->Request(AudioTransition::DeviceSwitch);
                     }
@@ -657,11 +669,14 @@ private:
     }
 
     [[nodiscard]] bool RecoverDevice() noexcept {
+        device_recovery_attempts_.fetch_add(1U, std::memory_order_relaxed);
         if (!OpenDevice()) {
+            device_recovery_failures_.fetch_add(1U, std::memory_order_relaxed);
             return false;
         }
         if (!StartPhysicalClient()) {
             StopPhysicalClient();
+            device_recovery_failures_.fetch_add(1U, std::memory_order_relaxed);
             return false;
         }
         if (guard_ != nullptr) {
@@ -669,6 +684,8 @@ private:
                                 ? AudioTransition::Start
                                 : AudioTransition::Pause);
         }
+        device_recovery_successes_.fetch_add(1U, std::memory_order_relaxed);
+        output_recovering_.store(false, std::memory_order_release);
         return true;
     }
 
@@ -762,6 +779,7 @@ private:
         endpoint_buffer_frames_ = 0U;
         current_buffer_depth_frames_.store(0U, std::memory_order_relaxed);
         output_latency_microseconds_.store(0U, std::memory_order_relaxed);
+        output_recovering_.store(false, std::memory_order_release);
         {
             std::scoped_lock lock(device_id_mutex_);
             current_device_id_.clear();
@@ -817,6 +835,11 @@ private:
     std::atomic<std::uint32_t> current_buffer_depth_frames_{0U};
     std::atomic<std::uint64_t> output_latency_microseconds_{0U};
     std::atomic<std::uint64_t> device_period_microseconds_{0U};
+    std::atomic<std::uint64_t> device_switch_events_{0U};
+    std::atomic<std::uint64_t> device_recovery_attempts_{0U};
+    std::atomic<std::uint64_t> device_recovery_successes_{0U};
+    std::atomic<std::uint64_t> device_recovery_failures_{0U};
+    std::atomic<bool> output_recovering_{false};
     std::atomic<HRESULT> last_error_{S_OK};
 };
 

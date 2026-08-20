@@ -154,8 +154,12 @@ void TestRtpTransportIntegration() {
     SendPacket(sender, after_setup.server_audio_port, packet6);
     const auto retransmit_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (sink.SubmittedFrames() < 6U &&
-           std::chrono::steady_clock::now() < retransmit_deadline) {
+    while (std::chrono::steady_clock::now() < retransmit_deadline) {
+        const auto current = controller.Diagnostics();
+        if (sink.SubmittedFrames() >= 6U && current.decoded_packets >= 5U &&
+            current.retransmitted_packets >= 1U) {
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds{2});
     }
     static_cast<void>(closesocket(sender));

@@ -11,7 +11,9 @@ interfaces can be included explicitly for development.
 `IocpTcpServer` is the phase 3 RTSP/HTTP control transport. Accepted sockets use overlapped
 `WSARecv`/`WSASend` on a completion port and communicate with core code only through
 `IControlConnectionHandler`. Connection counts, receive buffers, pending writes, and idle time
-are bounded.
+are bounded. Phase 6 makes the same server object restartable after `Stop`, allowing ordered
+sleep/resume recovery without rebuilding protocol/session ownership outside the composition
+root.
 
 `IocpUdpReceiver` is the phase 4 datagram adapter. It posts a bounded set of preallocated
 overlapped `WSARecvFrom` operations and forwards completed spans through

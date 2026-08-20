@@ -11,6 +11,7 @@ void TestDiscovery();
 void TestIocpTcpServer();
 void TestIocpUdpReceiver();
 void TestPcmL16Decoder();
+void TestRecovery();
 void TestRtpAudioStream();
 void TestRtpJitterBuffer();
 void TestRtpPacket();
@@ -22,6 +23,7 @@ void TestSignalGenerator();
 void TestWindowsDiscovery();
 void TestWindowsAudioStreamIntegration();
 void TestWindowsPlatform();
+void TestWindowsRecovery();
 
 namespace {
 
@@ -51,6 +53,7 @@ int main() {
     failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
     failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
     failed += Run("PcmL16Decoder", &TestPcmL16Decoder) ? 0 : 1;
+    failed += Run("Recovery", &TestRecovery) ? 0 : 1;
     failed += Run("RtpPacket", &TestRtpPacket) ? 0 : 1;
     failed += Run("RtpJitterBuffer", &TestRtpJitterBuffer) ? 0 : 1;
     failed += Run("RtpAudioStream", &TestRtpAudioStream) ? 0 : 1;
@@ -65,5 +68,6 @@ int main() {
     failed += Run("WindowsDiscovery", &TestWindowsDiscovery) ? 0 : 1;
     failed += Run("WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration) ? 0 : 1;
     failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
+    failed += Run("WindowsRecovery", &TestWindowsRecovery) ? 0 : 1;
     return failed == 0 ? 0 : 1;
 }

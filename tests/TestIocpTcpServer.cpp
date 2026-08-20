@@ -109,6 +109,21 @@ void TestIocpTcpServer() {
     server.Stop();
     APW_EXPECT(!server.Running());
 
+    APW_EXPECT(server.Start({.bind_address = "127.0.0.1",
+                             .port = 0U,
+                             .idle_timeout = std::chrono::seconds{2}}));
+    const SOCKET recovered_client = Connect(server.BoundPort());
+    SendAll(recovered_client,
+            "OPTIONS * RTSP/1.0\r\nCSeq: 11\r\nContent-Length: 0\r\n\r\n");
+    APW_EXPECT(ReceiveHead(recovered_client).find("RTSP/1.0 200 OK") !=
+               std::string::npos);
+    static_cast<void>(closesocket(recovered_client));
+    APW_EXPECT(WaitUntil([&server] { return server.Diagnostics().active_connections == 0U; },
+                         std::chrono::seconds{2}));
+    APW_EXPECT(server.Diagnostics().accepted_connections == 2U);
+    APW_EXPECT(service.Diagnostics().peer_disconnects == 1U);
+    server.Stop();
+
     airplaywin::protocol::AirPlayControlService timeout_service{authenticator};
     airplaywin::windows::network::IocpTcpServer timeout_server{timeout_service};
     APW_EXPECT(timeout_server.Start({.bind_address = "127.0.0.1",

@@ -21,6 +21,12 @@ struct ControlDiagnostics final {
     std::uint64_t rejected_requests{0U};
     std::uint64_t unsupported_requests{0U};
     std::uint64_t pairing_requests{0U};
+    std::uint64_t peer_disconnects{0U};
+    std::uint64_t requested_disconnects{0U};
+    std::uint64_t idle_disconnects{0U};
+    std::uint64_t transport_disconnects{0U};
+    std::uint64_t shutdown_disconnects{0U};
+    std::uint64_t protocol_disconnects{0U};
     transport::AudioTransportDiagnostics transport{};
     std::string last_error{};
 };
@@ -72,6 +78,12 @@ private:
     std::uint64_t rejected_requests_{0U};
     std::uint64_t unsupported_requests_{0U};
     std::uint64_t pairing_requests_{0U};
+    std::uint64_t peer_disconnects_{0U};
+    std::uint64_t requested_disconnects_{0U};
+    std::uint64_t idle_disconnects_{0U};
+    std::uint64_t transport_disconnects_{0U};
+    std::uint64_t shutdown_disconnects_{0U};
+    std::uint64_t protocol_disconnects_{0U};
     std::string last_error_{};
 };
 

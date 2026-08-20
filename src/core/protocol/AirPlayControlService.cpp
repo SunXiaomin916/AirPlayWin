@@ -479,8 +479,27 @@ transport::ControlReply AirPlayControlService::HandleRequest(
 
 void AirPlayControlService::OnDisconnected(const transport::ConnectionId connection_id,
                                            const transport::DisconnectReason reason) {
-    static_cast<void>(reason);
     std::scoped_lock lock{mutex_};
+    switch (reason) {
+    case transport::DisconnectReason::PeerClosed:
+        ++peer_disconnects_;
+        break;
+    case transport::DisconnectReason::Requested:
+        ++requested_disconnects_;
+        break;
+    case transport::DisconnectReason::IdleTimeout:
+        ++idle_disconnects_;
+        break;
+    case transport::DisconnectReason::TransportError:
+        ++transport_disconnects_;
+        break;
+    case transport::DisconnectReason::ServerShutdown:
+        ++shutdown_disconnects_;
+        break;
+    case transport::DisconnectReason::ProtocolError:
+        ++protocol_disconnects_;
+        break;
+    }
     if (audio_transport_ != nullptr) {
         audio_transport_->Teardown(connection_id);
     }
@@ -497,6 +516,12 @@ ControlDiagnostics AirPlayControlService::Diagnostics() const {
         .rejected_requests = rejected_requests_,
         .unsupported_requests = unsupported_requests_,
         .pairing_requests = pairing_requests_,
+        .peer_disconnects = peer_disconnects_,
+        .requested_disconnects = requested_disconnects_,
+        .idle_disconnects = idle_disconnects_,
+        .transport_disconnects = transport_disconnects_,
+        .shutdown_disconnects = shutdown_disconnects_,
+        .protocol_disconnects = protocol_disconnects_,
         .transport = audio_transport_ != nullptr
                          ? audio_transport_->Diagnostics()
                          : transport::AudioTransportDiagnostics{},

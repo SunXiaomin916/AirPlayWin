@@ -9,6 +9,7 @@ add_executable(airplaywin_tests
     TestIocpTcpServer.cpp
     TestIocpUdpReceiver.cpp
     TestPcmL16Decoder.cpp
+    TestRecovery.cpp
     TestRtpAudioStream.cpp
     TestRtpJitterBuffer.cpp
     TestRtpPacket.cpp
@@ -20,6 +21,7 @@ add_executable(airplaywin_tests
     TestWindowsDiscovery.cpp
     TestWindowsAudioStreamIntegration.cpp
     TestWindowsPlatform.cpp
+    TestWindowsRecovery.cpp
 )
 
 target_compile_features(airplaywin_tests PRIVATE cxx_std_23)

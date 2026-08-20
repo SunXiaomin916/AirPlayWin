@@ -81,9 +81,15 @@ struct AudioDiagnosticsSnapshot final {
     std::uint64_t clipped_samples{0};
     std::uint64_t dc_offset_events{0};
     std::uint64_t output_latency_microseconds{0};
+    std::uint64_t device_switch_events{0};
+    std::uint64_t device_recovery_attempts{0};
+    std::uint64_t device_recovery_successes{0};
+    std::uint64_t device_recovery_failures{0};
     std::wstring current_device_id{};
     std::uint32_t current_sample_rate{0};
     std::uint64_t current_audio_epoch{0};
+    std::uint32_t last_output_error{0};
+    bool output_recovering{false};
     AudioTransitionState transition_state{AudioTransitionState::Stopped};
 };
 

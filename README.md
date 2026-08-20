@@ -1,10 +1,10 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 5
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 6
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
-timeline integration. Pairing, Apple codec decoding, encryption, PTP, multi-room, and WinUI
-are not implemented yet.
+timeline integration, plus operational recovery and a repeatable x64 beta package. Pairing,
+Apple codec decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -84,6 +84,22 @@ are not implemented yet.
   now crosses RTP -> L16 decode -> WindowsAudioStreamSink -> WindowsAudioEngine -> AudioEngine
   -> IAudioOutput and verifies epoch, pause/resume, flush, volume, and stale-timeline rejection.
 
+## Phase 6 capabilities
+
+- Native suspend/resume notifications are atomically coalesced and handled on the application
+  thread; suspend withdraws discovery and closes control/media/audio sessions, while resume
+  rebinds TCP and republishes DNS-SD with bounded one-second retries.
+- Default audio endpoint changes and fixed-device removal/reinsert recovery now expose endpoint
+  switch, retry, success/failure, HRESULT, and recovering-state diagnostics.
+- Peer, requested, idle, transport, shutdown, and protocol disconnect reasons are counted; 100
+  reconnect cycles verify that sender ownership and session resources are released every time.
+- `--serve` is single-instance through a local named mutex. The IOCP TCP server is restartable
+  on the same object after lifecycle transitions.
+- Explicit firewall status/install/remove commands manage exact executable-scoped inbound
+  rules on the Private profile only. Normal receiver startup never mutates the firewall.
+- CMake install rules, CPack ZIP output, and guarded PowerShell install/uninstall scripts provide
+  the first per-user x64 beta deployment path.
+
 ## Architecture
 
 ```text
@@ -133,6 +149,19 @@ app / future session coordinator
  native mDNS on eligible LAN interfaces
 ```
 
+Operational lifecycle remains outside the audio/protocol layers:
+
+```text
+WindowsPowerEventMonitor -> RecoveryCoordinator -> app composition root
+                                                | stop/start TCP + DNS-SD
+                                                | fresh session/audio timeline
+                                                v
+                                         recovery diagnostics
+```
+
+Windows callback code only records atomic flags. The composition root owns ordered teardown,
+retry, and recovery; protocol code still cannot call power, firewall, or WASAPI APIs.
+
 ## Prerequisites
 
 - Windows 11
@@ -159,6 +188,15 @@ ctest --preset debug
 
 Warnings are compiled as errors (`/W4 /WX`). No third-party packages are required in the
 current phases.
+
+Create the phase 6 x64 beta ZIP after the Release build:
+
+```powershell
+cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
+```
+
+See [installer/README.md](installer/README.md) for the per-user install, startup, firewall, and
+uninstall workflow. The beta package is unsigned.
 
 ## Audio probe
 
@@ -235,8 +273,18 @@ and retransmission-wrapped L16 packets:
     -DropEvery 25 -DuplicateEvery 40 -ReorderPairs
 ```
 
-The CLI does not create Windows Firewall rules; allow the executable on the intended private
-network profile when testing from another host.
+Inspect the two program-scoped Private-profile rules without changing the machine:
+
+```powershell
+.\build\vs2022-x64\Debug\AirPlayWin.exe --firewall-status
+```
+
+An Administrator can explicitly create or remove those rules with
+`--install-firewall-rules` and `--remove-firewall-rules`. Normal `--serve` startup does not
+change firewall configuration.
+
+For an installed long-running receiver use `--serve --run-until-stopped`; press Ctrl+C for an
+ordered service/audio shutdown. A second receiver instance exits before attempting to bind.
 
 ## Verified on the development machine
 
@@ -284,6 +332,17 @@ anchored resume, anchored `FLUSH`, and `TEARDOWN`. Three replay batches delivere
 packets/12,672 frames, including six retransmission-wrapped packets routed through the control
 port; the server reported zero parse/transport errors and zero WASAPI underruns.
 
+Phase 6 adds recovery coordinator, disconnect classification, restartable IOCP TCP, Windows
+power notification, single-instance, and read-only firewall-query tests. The complete suite now
+contains 22 test modules and passed 50 consecutive Debug runs. A local lifecycle smoke withdrew
+both services on a simulated suspend, then rebound the same TCP ports and republished DNS-SD
+after resume with one successful recovery attempt and zero native errors; a fresh RTSP request
+then received 200 OK, and a competing receiver exited with the documented single-instance code.
+CPack generated and verified the expected executable, README, and installer contents. Firewall
+mutation, actual machine sleep, Wi-Fi/DHCP transitions, and physical USB/default-endpoint
+changes are deliberately left as manual acceptance because the automated suite does not change
+host configuration or hardware state.
+
 ## Current boundary
 
 Shared mode remains the only enabled WASAPI mode. The backend uses the application format
@@ -291,12 +350,15 @@ with the Windows audio engine's shared-mode format converter. Exclusive mode and
 `IAudioClient3` minimum-period tuning remain later audio-backend work.
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
-absent pairing, crypto, PTP, or Apple codec modules. Phase 5 accepts inbound retransmitted
-audio on the control port, but it does not originate resend requests or implement timing
-replies/PTP. Current Apple senders normally need the deferred pairing, encryption, codec, and
-timing work; physical iPhone/iPad/Mac interoperability is therefore not claimed in this phase.
+absent pairing, crypto, PTP, or Apple codec modules. Phase 6 hardens the existing development
+receiver but does not expand its advertised media/security capabilities. Phase 5 accepts
+inbound retransmitted audio on the control port, but it does not originate resend requests or
+implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
+encryption, codec, and timing work; physical iPhone/iPad/Mac interoperability is therefore not
+claimed in this phase.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
 [phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries, and
-[phase 5](docs/phase-5.md) for AudioEngine/timeline/control integration.
+[phase 5](docs/phase-5.md) for AudioEngine/timeline/control integration, and
+[phase 6](docs/phase-6.md) for lifecycle recovery, diagnostics, and beta deployment.

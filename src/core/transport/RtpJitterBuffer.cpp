@@ -84,7 +84,11 @@ JitterPopKind RtpJitterBuffer::Pop(BufferedRtpPacket& packet) noexcept {
         ++emitted_packets_;
         return JitterPopKind::Packet;
     }
-    if (buffered_packets_ != 0U && highest_sequence_ > next_sequence_) {
+    // Keep the configured reorder depth after warm-up as well. Audio and retransmission
+    // packets arrive on separate UDP sockets, so a later sequence can legitimately win the
+    // scheduling race. Declaring loss with only one packet ahead makes that retransmission
+    // late before it has a chance to enter the buffer.
+    if (buffered_packets_ >= config_.target_packets && highest_sequence_ > next_sequence_) {
         packet = {};
         packet.extended_sequence_number = next_sequence_;
         packet.sequence_number = static_cast<std::uint16_t>(next_sequence_ & 0xFFFFU);

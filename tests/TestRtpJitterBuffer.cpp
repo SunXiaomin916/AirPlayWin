@@ -51,15 +51,26 @@ void TestRtpJitterBuffer() {
         .capacity_packets = 8U, .target_packets = 2U, .clock_rate = 44'100U}};
     APW_EXPECT(Insert(missing, 20U, 2'000U, 2'000'000'000LL));
     APW_EXPECT(Insert(missing, 22U, 2'704U, 2'016'000'000LL));
+    APW_EXPECT(Insert(missing, 23U, 3'056U, 2'024'000'000LL));
     APW_EXPECT(missing.Pop(output) == JitterPopKind::Packet);
     APW_EXPECT(output.sequence_number == 20U);
     APW_EXPECT(missing.Pop(output) == JitterPopKind::Missing);
     APW_EXPECT(output.sequence_number == 21U);
     APW_EXPECT(missing.Pop(output) == JitterPopKind::Packet);
     APW_EXPECT(output.sequence_number == 22U);
+    APW_EXPECT(missing.Pop(output) == JitterPopKind::Packet);
+    APW_EXPECT(output.sequence_number == 23U);
     APW_EXPECT(missing.Diagnostics().lost_packets == 1U);
     APW_EXPECT(!Insert(missing, 21U, 2'352U, 2'020'000'000LL));
     APW_EXPECT(missing.Diagnostics().late_packets == 1U);
+
+    APW_EXPECT(Insert(missing, 25U, 3'760U, 2'040'000'000LL));
+    APW_EXPECT(missing.Pop(output) == JitterPopKind::Waiting);
+    APW_EXPECT(Insert(missing, 24U, 3'408U, 2'032'000'000LL));
+    APW_EXPECT(missing.Pop(output) == JitterPopKind::Packet);
+    APW_EXPECT(output.sequence_number == 24U);
+    APW_EXPECT(missing.Pop(output) == JitterPopKind::Packet);
+    APW_EXPECT(output.sequence_number == 25U);
 
     RtpJitterBuffer wrapped{RtpJitterBufferConfig{
         .capacity_packets = 8U, .target_packets = 2U, .clock_rate = 44'100U}};

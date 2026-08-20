@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
@@ -18,6 +19,7 @@
 #include "core/audio/TestSignalGenerator.h"
 #include "core/crypto/OpenSessionAuthenticator.h"
 #include "core/discovery/AirPlayServiceRecords.h"
+#include "core/lifecycle/RecoveryCoordinator.h"
 #include "core/protocol/AirPlayControlService.h"
 #include "platform/windows/audio/WindowsAudioDeviceEnumerator.h"
 #include "platform/windows/audio/WindowsAudioEngine.h"
@@ -26,6 +28,9 @@
 #include "platform/windows/network/IocpTcpServer.h"
 #include "platform/windows/network/WindowsNetworkInterfaceEnumerator.h"
 #include "platform/windows/network/WindowsRtpTransportController.h"
+#include "platform/windows/system/SingleInstanceGuard.h"
+#include "platform/windows/system/WindowsFirewallManager.h"
+#include "platform/windows/system/WindowsPowerEventMonitor.h"
 #include "platform/windows/timing/QpcClock.h"
 
 namespace {
@@ -41,7 +46,46 @@ using airplaywin::windows::network::WindowsDiscoveryService;
 using airplaywin::windows::network::IocpTcpServer;
 using airplaywin::windows::network::WindowsNetworkInterfaceEnumerator;
 using airplaywin::windows::network::WindowsRtpTransportController;
+using airplaywin::windows::system::FirewallRuleHealth;
+using airplaywin::windows::system::PowerLifecycleEvent;
+using airplaywin::windows::system::SingleInstanceGuard;
+using airplaywin::windows::system::WindowsFirewallManager;
+using airplaywin::windows::system::WindowsPowerEventMonitor;
 using airplaywin::windows::timing::QpcClock;
+
+[[nodiscard]] std::atomic_bool& ShutdownRequestedFlag() noexcept {
+    static std::atomic_bool requested{false};
+    return requested;
+}
+
+BOOL WINAPI HandleConsoleControl(const DWORD type) noexcept {
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT ||
+        type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) {
+        ShutdownRequestedFlag().store(true, std::memory_order_release);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+class ScopedConsoleControlHandler final {
+public:
+    ScopedConsoleControlHandler() noexcept {
+        ShutdownRequestedFlag().store(false, std::memory_order_release);
+        installed_ = SetConsoleCtrlHandler(&HandleConsoleControl, TRUE) != FALSE;
+    }
+
+    ~ScopedConsoleControlHandler() {
+        if (installed_) {
+            static_cast<void>(SetConsoleCtrlHandler(&HandleConsoleControl, FALSE));
+        }
+    }
+
+    ScopedConsoleControlHandler(const ScopedConsoleControlHandler&) = delete;
+    ScopedConsoleControlHandler& operator=(const ScopedConsoleControlHandler&) = delete;
+
+private:
+    bool installed_{false};
+};
 
 struct CommandLine final {
     bool list_devices{false};
@@ -49,6 +93,11 @@ struct CommandLine final {
     bool play{false};
     bool discover{false};
     bool serve{false};
+    bool firewall_status{false};
+    bool install_firewall_rules{false};
+    bool remove_firewall_rules{false};
+    bool lifecycle_smoke{false};
+    bool run_until_stopped{false};
     std::wstring device_id{};
     std::wstring discovery_name{L"AirPlayWin"};
     airplaywin::discovery::DeviceId discovery_device_id{};
@@ -63,7 +112,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-5 AudioEngine integration development receiver\n\n"
+        << L"AirPlayWin phase-6 recovery and deployment beta\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
@@ -75,7 +124,11 @@ void PrintUsage() {
         << L"  AirPlayWin --serve [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--device <endpoint-id>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
-        << L"             [--diagnostics-interval <seconds>] [--include-virtual-interfaces]\n\n"
+        << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
+        << L"             [--include-virtual-interfaces]\n\n"
+        << L"  AirPlayWin --firewall-status [--raop-port <port>] [--airplay-port <port>]\n"
+        << L"  AirPlayWin --install-firewall-rules [--raop-port <port>] [--airplay-port <port>]\n"
+        << L"  AirPlayWin --remove-firewall-rules\n\n"
         << L"Examples:\n"
         << L"  AirPlayWin --play --signal 440 --duration 1800\n"
         << L"  AirPlayWin --play --device \"{endpoint-id}\" --transition-cycles 100\n"
@@ -132,6 +185,16 @@ void PrintUsage() {
             command.discover = true;
         } else if (argument == L"--serve") {
             command.serve = true;
+        } else if (argument == L"--firewall-status") {
+            command.firewall_status = true;
+        } else if (argument == L"--install-firewall-rules") {
+            command.install_firewall_rules = true;
+        } else if (argument == L"--remove-firewall-rules") {
+            command.remove_firewall_rules = true;
+        } else if (argument == L"--lifecycle-smoke") {
+            command.lifecycle_smoke = true;
+        } else if (argument == L"--run-until-stopped") {
+            command.run_until_stopped = true;
         } else if (argument == L"--device" && index + 1 < argc) {
             command.device_id = argv[++index];
         } else if (argument == L"--name" && index + 1 < argc) {
@@ -173,7 +236,83 @@ void PrintUsage() {
             return false;
         }
     }
+    const auto firewall_commands = static_cast<unsigned>(command.firewall_status) +
+                                   static_cast<unsigned>(command.install_firewall_rules) +
+                                   static_cast<unsigned>(command.remove_firewall_rules);
+    if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
+        (command.run_until_stopped && !command.serve)) {
+        return false;
+    }
+    if (firewall_commands != 0U &&
+        (command.play || command.discover || command.serve || command.list_devices ||
+         command.list_network_interfaces)) {
+        return false;
+    }
     return true;
+}
+
+[[nodiscard]] std::wstring_view FirewallHealthText(
+    const FirewallRuleHealth health) noexcept {
+    switch (health) {
+    case FirewallRuleHealth::Missing:
+        return L"missing";
+    case FirewallRuleHealth::Healthy:
+        return L"healthy";
+    case FirewallRuleHealth::Misconfigured:
+        return L"misconfigured";
+    case FirewallRuleHealth::Error:
+        return L"error";
+    }
+    return L"unknown";
+}
+
+[[nodiscard]] int RunFirewallCommand(const CommandLine& command) {
+    const auto executable = WindowsFirewallManager::CurrentExecutablePath();
+    if (executable.empty()) {
+        std::wcerr << L"Unable to resolve the AirPlayWin executable path.\n";
+        return 20;
+    }
+    const auto rules = WindowsFirewallManager::CoreRuleSpecs(
+        executable, command.raop_port, command.airplay_port);
+    bool succeeded = true;
+    if (command.remove_firewall_rules) {
+        for (const auto& rule : rules) {
+            std::uint32_t error = ERROR_SUCCESS;
+            const bool removed = WindowsFirewallManager::Remove(rule.name, error);
+            succeeded = succeeded && removed;
+            std::wcout << L"Firewall rule \"" << rule.name << L"\": "
+                       << (removed ? L"removed/not present" : L"remove failed")
+                       << L", error=0x" << std::hex << error << std::dec << L"\n";
+        }
+        return succeeded ? 0 : 21;
+    }
+    if (command.install_firewall_rules) {
+        for (const auto& rule : rules) {
+            std::uint32_t error = ERROR_SUCCESS;
+            const bool installed = WindowsFirewallManager::Install(rule, error);
+            succeeded = succeeded && installed;
+            std::wcout << L"Firewall rule \"" << rule.name << L"\": "
+                       << (installed ? L"installed" : L"install failed") << L", error=0x"
+                       << std::hex << error << std::dec << L"\n";
+        }
+        return succeeded ? 0 : 22;
+    }
+    for (const auto& rule : rules) {
+        const auto status = WindowsFirewallManager::Query(rule);
+        const bool healthy = status.health == FirewallRuleHealth::Healthy;
+        succeeded = succeeded && healthy;
+        std::wcout << L"Firewall rule \"" << rule.name << L"\": "
+                   << FirewallHealthText(status.health);
+        if (status.health == FirewallRuleHealth::Healthy ||
+            status.health == FirewallRuleHealth::Misconfigured) {
+            std::wcout << L", private_only="
+                       << (status.private_profile_only ? L"yes" : L"no")
+                       << L", program="
+                       << (status.executable_matches ? L"match" : L"mismatch");
+        }
+        std::wcout << L", error=0x" << std::hex << status.last_error << std::dec << L"\n";
+    }
+    return succeeded ? 0 : 23;
 }
 
 void ListDevices() {
@@ -428,7 +567,12 @@ void PrintControlDiagnostics(
                << L", parse_errors=" << control.parse_errors
                << L", rejected=" << control.rejected_requests
                << L", unsupported=" << control.unsupported_requests
-               << L", pairing_requests=" << control.pairing_requests << L"\n"
+               << L", pairing_requests=" << control.pairing_requests
+               << L", disconnects(peer/request/idle/transport/shutdown/protocol)="
+               << control.peer_disconnects << L"/" << control.requested_disconnects << L"/"
+               << control.idle_disconnects << L"/" << control.transport_disconnects << L"/"
+               << control.shutdown_disconnects << L"/" << control.protocol_disconnects
+               << L"\n"
                << L"  RAOP " << raop.bound_port << L": active=" << raop.active_connections
                << L", accepted=" << raop.accepted_connections << L", rx="
                << raop.received_bytes << L", tx=" << raop.sent_bytes
@@ -469,7 +613,29 @@ void PrintControlDiagnostics(
                << L", rejected_frames=" << audio.rejected_frames
                << L", queue_frames=" << audio.output.current_buffer_depth_frames
                << L", underruns=" << audio.output.underrun_count
-               << L", latency_us=" << audio.output.output_latency_microseconds << L"\n"
+               << L", latency_us=" << audio.output.output_latency_microseconds
+               << L", device_recovering="
+               << (audio.output.output_recovering ? L"yes" : L"no")
+               << L", device_switches=" << audio.output.device_switch_events
+               << L", recovery(attempt/success/fail)="
+               << audio.output.device_recovery_attempts << L"/"
+               << audio.output.device_recovery_successes << L"/"
+               << audio.output.device_recovery_failures << L", output_error=0x" << std::hex
+               << audio.output.last_output_error << std::dec << L"\n"
+               << std::flush;
+}
+
+void PrintRecoveryDiagnostics(
+    const airplaywin::lifecycle::RecoveryDiagnostics& recovery,
+    const airplaywin::windows::system::PowerEventDiagnostics& power) {
+    std::wcout << L"  lifecycle: power_monitor=" << (power.running ? L"running" : L"stopped")
+               << L", suspend=" << recovery.suspend_events
+               << L", resume=" << recovery.resume_events
+               << L", generation=" << recovery.recovery_generation
+               << L", recovery(attempt/success/fail)=" << recovery.recovery_attempts << L"/"
+               << recovery.recovery_successes << L"/" << recovery.recovery_failures
+               << L", last_error=0x" << std::hex << recovery.last_error
+               << L", monitor_error=0x" << power.last_error << std::dec << L"\n"
                << std::flush;
 }
 
@@ -489,18 +655,6 @@ void PrintControlDiagnostics(
         airplaywin::protocol::ParserLimits{}, &media_transport};
     IocpTcpServer raop_server{control};
     IocpTcpServer airplay_server{control};
-    if (!raop_server.Start({.bind_address = "0.0.0.0", .port = command.raop_port})) {
-        std::wcerr << L"Failed to bind the RAOP IOCP control server; error="
-                   << raop_server.Diagnostics().last_error << L".\n";
-        return 16;
-    }
-    if (!airplay_server.Start({.bind_address = "0.0.0.0", .port = command.airplay_port})) {
-        std::wcerr << L"Failed to bind the AirPlay IOCP control server; error="
-                   << airplay_server.Diagnostics().last_error << L".\n";
-        raop_server.Stop();
-        return 17;
-    }
-
     airplaywin::discovery::DiscoveryConfig discovery_config{
         .device_name = command.discovery_name,
         .device_id = command.discovery_device_id,
@@ -514,26 +668,112 @@ void PrintControlDiagnostics(
         discovery_config.device_id = WindowsNetworkInterfaceEnumerator::SystemDeviceId();
     }
     WindowsDiscoveryService discovery;
-    if (!discovery.Start(discovery_config)) {
-        std::wcerr << L"Control ports are bound, but DNS-SD publication failed; error="
-                   << discovery.Diagnostics().last_error << L".\n";
+    auto stop_services = [&]() noexcept {
+        discovery.Stop();
         airplay_server.Stop();
         raop_server.Stop();
-        return 18;
+    };
+    auto start_services = [&]() -> int {
+        if (!raop_server.Start({.bind_address = "0.0.0.0", .port = command.raop_port})) {
+            return 16;
+        }
+        if (!airplay_server.Start(
+                {.bind_address = "0.0.0.0", .port = command.airplay_port})) {
+            raop_server.Stop();
+            return 17;
+        }
+        if (!discovery.Start(discovery_config)) {
+            airplay_server.Stop();
+            raop_server.Stop();
+            return 18;
+        }
+        return 0;
+    };
+    auto runtime_error = [&]() noexcept {
+        const auto discovery_error = discovery.Diagnostics().last_error;
+        const auto airplay_error = airplay_server.Diagnostics().last_error;
+        const auto raop_error = raop_server.Diagnostics().last_error;
+        return discovery_error != 0U
+                   ? discovery_error
+                   : (airplay_error != 0U ? airplay_error : raop_error);
+    };
+
+    const auto start_result = start_services();
+    if (start_result != 0) {
+        std::wcerr << L"Failed to start receiver services; stage=" << start_result
+                   << L", error=" << runtime_error() << L".\n";
+        return start_result;
     }
+
+    WindowsPowerEventMonitor power_monitor;
+    if (!power_monitor.Start()) {
+        std::wcerr << L"Power notification registration failed; receiver remains available, "
+                      L"error="
+                   << power_monitor.Diagnostics().last_error << L".\n";
+    }
+    airplaywin::lifecycle::RecoveryCoordinator recovery;
+    ScopedConsoleControlHandler console_control;
+    bool services_running = true;
+    auto next_recovery_attempt = std::chrono::steady_clock::time_point{};
 
     std::wcout << L"Control receiver ready: RAOP TCP " << command.raop_port
                << L", AirPlay TCP " << command.airplay_port
                << L". Authentication is open; unencrypted RTP/L16 development transport is "
                   L"enabled.\n";
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(command.duration_seconds);
+    const auto deadline =
+        command.run_until_stopped
+            ? std::chrono::steady_clock::time_point::max()
+            : std::chrono::steady_clock::now() +
+                  std::chrono::seconds(command.duration_seconds);
     const auto interval = std::chrono::seconds(command.diagnostics_interval_seconds);
     auto next_diagnostics = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (std::chrono::steady_clock::now() >= next_diagnostics) {
+    const auto lifecycle_suspend_at =
+        command.lifecycle_smoke ? std::chrono::steady_clock::now() + std::chrono::seconds{1}
+                                : std::chrono::steady_clock::time_point::max();
+    auto lifecycle_resume_at = std::chrono::steady_clock::time_point::max();
+    bool lifecycle_smoke_suspended = false;
+    bool lifecycle_smoke_resumed = false;
+    while (std::chrono::steady_clock::now() < deadline &&
+           !ShutdownRequestedFlag().load(std::memory_order_acquire)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!lifecycle_smoke_suspended && now >= lifecycle_suspend_at) {
+            power_monitor.RecordPowerBroadcast(PBT_APMSUSPEND);
+            lifecycle_smoke_suspended = true;
+            lifecycle_resume_at = now + std::chrono::seconds{1};
+        }
+        if (lifecycle_smoke_suspended && !lifecycle_smoke_resumed &&
+            now >= lifecycle_resume_at) {
+            power_monitor.RecordPowerBroadcast(PBT_APMRESUMEAUTOMATIC);
+            lifecycle_smoke_resumed = true;
+        }
+        while (const auto event = power_monitor.Poll()) {
+            if (*event == PowerLifecycleEvent::Suspend) {
+                recovery.OnSuspend();
+                if (services_running) {
+                    stop_services();
+                    services_running = false;
+                }
+                std::wcout << L"Receiver suspended: sessions and audio were safely stopped.\n";
+            } else {
+                recovery.OnResume();
+                next_recovery_attempt = now;
+                std::wcout << L"Receiver resume observed: recovery scheduled.\n";
+            }
+        }
+        if (!services_running && recovery.RecoveryRequired() &&
+            now >= next_recovery_attempt) {
+            const auto recovery_result = start_services();
+            services_running = recovery_result == 0;
+            recovery.RecordRecoveryResult(services_running, runtime_error());
+            next_recovery_attempt = now + std::chrono::seconds{1};
+            if (services_running) {
+                std::wcout << L"Receiver services recovered and DNS-SD was republished.\n";
+            }
+        }
+        if (now >= next_diagnostics) {
             PrintControlDiagnostics(control.Diagnostics(), raop_server.Diagnostics(),
                                     airplay_server.Diagnostics(), audio_sink.Diagnostics());
+            PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
             next_diagnostics += interval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -544,9 +784,12 @@ void PrintControlDiagnostics(
     const auto control_diagnostics = control.Diagnostics();
     PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics,
                             audio_sink.Diagnostics());
-    discovery.Stop();
-    airplay_server.Stop();
-    raop_server.Stop();
+    PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
+    recovery.Stop();
+    power_monitor.Stop();
+    if (services_running) {
+        stop_services();
+    }
     return raop_diagnostics.transport_errors == 0U &&
                    airplay_diagnostics.transport_errors == 0U
                ? 0
@@ -564,6 +807,11 @@ int wmain(const int argc, wchar_t* argv[]) {
         PrintUsage();
         return 1;
     }
+    const bool firewall_command = command.firewall_status || command.install_firewall_rules ||
+                                  command.remove_firewall_rules;
+    if (firewall_command) {
+        return RunFirewallCommand(command);
+    }
     if (command.list_devices || (!command.play && !command.discover && !command.serve &&
                                  !command.list_network_interfaces)) {
         ListDevices();
@@ -575,6 +823,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         return RunProbe(command);
     }
     if (command.serve) {
+        SingleInstanceGuard instance{L"Local\\AirPlayWin.Core"};
+        if (!instance.Acquired()) {
+            std::wcerr << (instance.AlreadyRunning()
+                               ? L"Another AirPlayWin receiver instance is already running.\n"
+                               : L"Unable to create the AirPlayWin single-instance guard.\n");
+            return 24;
+        }
         return RunControlServer(command);
     }
     if (command.discover) {

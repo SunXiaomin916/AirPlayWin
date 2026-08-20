@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.5.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.6.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -21,6 +21,7 @@ add_library(airplaywin_core STATIC
     src/core/crypto/OpenSessionAuthenticator.cpp
     src/core/discovery/AirPlayServiceRecords.cpp
     src/core/discovery/NetworkInterfacePolicy.cpp
+    src/core/lifecycle/RecoveryCoordinator.cpp
     src/core/protocol/AirPlayControlService.cpp
     src/core/protocol/IncrementalRtspParser.cpp
     src/core/protocol/RtspResponseBuilder.cpp
@@ -48,6 +49,9 @@ add_library(airplaywin_windows STATIC
     src/platform/windows/network/IocpUdpReceiver.cpp
     src/platform/windows/network/WindowsNetworkInterfaceEnumerator.cpp
     src/platform/windows/network/WindowsRtpTransportController.cpp
+    src/platform/windows/system/SingleInstanceGuard.cpp
+    src/platform/windows/system/WindowsFirewallManager.cpp
+    src/platform/windows/system/WindowsPowerEventMonitor.cpp
     src/platform/windows/timing/QpcClock.cpp
 )
 
@@ -56,7 +60,7 @@ target_compile_features(airplaywin_windows PUBLIC cxx_std_23)
 target_compile_definitions(airplaywin_windows PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(airplaywin_windows
     PUBLIC airplaywin_core
-    PRIVATE advapi32 avrt dnsapi iphlpapi ole32 propsys uuid ws2_32
+    PRIVATE advapi32 avrt dnsapi iphlpapi ole32 oleaut32 powrprof propsys uuid ws2_32
 )
 airplaywin_set_warnings(airplaywin_windows)
 
@@ -70,3 +74,14 @@ if(AIRPLAYWIN_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+install(TARGETS AirPlayWin RUNTIME DESTINATION bin)
+install(FILES README.md DESTINATION .)
+install(DIRECTORY installer/ DESTINATION installer)
+
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_NAME "AirPlayWin")
+set(CPACK_PACKAGE_VENDOR "AirPlayWin")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "AirPlayWin-${PROJECT_VERSION}-windows-x64")
+include(CPack)
