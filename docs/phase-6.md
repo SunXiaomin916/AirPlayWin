@@ -104,7 +104,7 @@ machine's power, network, audio, or firewall state.
 
 ## Next stage
 
-Per the development document, phase 7 can begin precise sender-clock mapping, adaptive latency,
-and the timing work needed by AirPlay 2. It should populate the existing optional target-QPC
-field through a timing abstraction and keep the recovery coordinator independent of protocol
-clock details.
+Per the development document, phase 7 is the AirPlay 2 buffered/timing experiment. It should
+populate the existing optional target-QPC field through a timing abstraction while keeping the
+recovery coordinator independent of protocol clocks. Adaptive low-latency work belongs to S9;
+the complete Windows PTP/ClockServo and holdover/relock path belongs to S10.

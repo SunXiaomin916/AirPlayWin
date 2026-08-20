@@ -13,6 +13,7 @@
 #include "core/audio/PcmL16Decoder.h"
 #include "core/transport/RtpAudioStream.h"
 #include "platform/windows/audio/WindowsAudioStreamSink.h"
+#include "platform/windows/timing/QpcClock.h"
 
 namespace {
 
@@ -178,4 +179,57 @@ void TestWindowsAudioStreamIntegration() {
     stream.Stop();
     APW_EXPECT(observed_output->stop_count_.load(std::memory_order_acquire) == 1U);
     APW_EXPECT(observed_output->close_count_.load(std::memory_order_acquire) == 1U);
+
+    auto scheduled_output = std::make_unique<InspectableAudioOutput>();
+    auto* const observed_scheduled_output = scheduled_output.get();
+    airplaywin::windows::audio::WindowsAudioStreamSink scheduled_sink{
+        std::move(scheduled_output), 5U, 5U};
+    APW_EXPECT(scheduled_sink.Configure(
+        {.sample_rate = 8'000U, .channel_count = 1U}));
+    APW_EXPECT(scheduled_sink.Start());
+    std::array<float, 40U> scheduled_samples{};
+    const auto frequency = airplaywin::windows::timing::QpcClock::Frequency();
+    APW_EXPECT(frequency > 0);
+    const auto target = airplaywin::windows::timing::QpcClock::Now() + frequency * 30 / 1'000;
+    const auto wait_started = std::chrono::steady_clock::now();
+    APW_EXPECT(scheduled_sink.Submit({
+        .interleaved_samples = scheduled_samples,
+        .frame_count = static_cast<std::uint32_t>(scheduled_samples.size()),
+        .rtp_timestamp = 3'000U,
+        .extended_sequence_number = 30U,
+        .target_qpc = target,
+    }));
+    const auto waited = std::chrono::steady_clock::now() - wait_started;
+    APW_EXPECT(waited >= std::chrono::milliseconds{15});
+    const auto scheduled = scheduled_sink.Diagnostics();
+    APW_EXPECT(scheduled.scheduled_frames == scheduled_samples.size());
+    APW_EXPECT(scheduled.scheduling_wait_microseconds >= 15'000U);
+    APW_EXPECT(scheduled.last_target_qpc == target);
+    APW_EXPECT(observed_scheduled_output->last_timestamp_qpc_.load(
+                   std::memory_order_acquire) == target);
+
+    const auto cancelled_target = airplaywin::windows::timing::QpcClock::Now() +
+                                  frequency * 250 / 1'000;
+    std::atomic<bool> cancelled_submission{true};
+    const auto cancellation_started = std::chrono::steady_clock::now();
+    std::thread pending_submitter{[&] {
+        cancelled_submission.store(
+            scheduled_sink.Submit({
+                .interleaved_samples = scheduled_samples,
+                .frame_count = static_cast<std::uint32_t>(scheduled_samples.size()),
+                .rtp_timestamp = 3'040U,
+                .extended_sequence_number = 31U,
+                .target_qpc = cancelled_target,
+            }),
+            std::memory_order_release);
+    }};
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    scheduled_sink.Flush();
+    pending_submitter.join();
+    APW_EXPECT(!cancelled_submission.load(std::memory_order_acquire));
+    APW_EXPECT(std::chrono::steady_clock::now() - cancellation_started <
+               std::chrono::milliseconds{200});
+    APW_EXPECT(scheduled_sink.Diagnostics().rejected_frames >=
+               scheduled_samples.size());
+    scheduled_sink.Stop();
 }

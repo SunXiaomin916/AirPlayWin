@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.6.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.7.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -30,6 +30,7 @@ add_library(airplaywin_core STATIC
     src/core/protocol/RtspTypes.cpp
     src/core/protocol/SdpAudioParser.cpp
     src/core/session/SessionManager.cpp
+    src/core/timing/BufferedRtpTimingEngine.cpp
     src/core/transport/RtpAudioStream.cpp
     src/core/transport/RtpJitterBuffer.cpp
     src/core/transport/RtpPacket.cpp

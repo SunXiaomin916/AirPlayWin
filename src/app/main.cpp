@@ -98,6 +98,8 @@ struct CommandLine final {
     bool remove_firewall_rules{false};
     bool lifecycle_smoke{false};
     bool run_until_stopped{false};
+    bool experimental_buffered_timing{false};
+    std::uint32_t buffered_timing_milliseconds{120U};
     std::wstring device_id{};
     std::wstring discovery_name{L"AirPlayWin"};
     airplaywin::discovery::DeviceId discovery_device_id{};
@@ -112,7 +114,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-6 recovery and deployment beta\n\n"
+        << L"AirPlayWin phase-7 buffered timing experiment\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
@@ -125,6 +127,7 @@ void PrintUsage() {
         << L"             [--device <endpoint-id>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
+        << L"             [--experimental-buffered-timing [--buffered-timing-ms <20..2000>]]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --firewall-status [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --install-firewall-rules [--raop-port <port>] [--airplay-port <port>]\n"
@@ -195,6 +198,15 @@ void PrintUsage() {
             command.lifecycle_smoke = true;
         } else if (argument == L"--run-until-stopped") {
             command.run_until_stopped = true;
+        } else if (argument == L"--experimental-buffered-timing") {
+            command.experimental_buffered_timing = true;
+        } else if (argument == L"--buffered-timing-ms" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index], command.buffered_timing_milliseconds) ||
+                command.buffered_timing_milliseconds < 20U ||
+                command.buffered_timing_milliseconds > 2'000U) {
+                return false;
+            }
+            command.experimental_buffered_timing = true;
         } else if (argument == L"--device" && index + 1 < argc) {
             command.device_id = argv[++index];
         } else if (argument == L"--name" && index + 1 < argc) {
@@ -240,7 +252,8 @@ void PrintUsage() {
                                    static_cast<unsigned>(command.install_firewall_rules) +
                                    static_cast<unsigned>(command.remove_firewall_rules);
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
-        (command.run_until_stopped && !command.serve)) {
+        (command.run_until_stopped && !command.serve) ||
+        (command.experimental_buffered_timing && !command.serve)) {
         return false;
     }
     if (firewall_commands != 0U &&
@@ -606,11 +619,29 @@ void PrintControlDiagnostics(
                << (transport.has_timestamp_anchor
                        ? std::to_wstring(transport.timestamp_anchor)
                        : std::wstring{L"none"})
+               << L"\n  timing: enabled=" << (transport.timing.enabled ? L"yes" : L"no")
+               << L", locked=" << (transport.timing.locked ? L"yes" : L"no")
+               << L", generation=" << transport.timing.generation
+               << L", buffer_us=" << transport.timing.target_buffer_microseconds
+               << L", mapped=" << transport.timing.mapped_packets
+               << L", late=" << transport.timing.late_mappings
+               << L", max_late_us=" << transport.timing.maximum_lateness_microseconds
+               << L", anchor_remote=" << transport.timing.anchor_remote_time
+               << L", anchor_target_qpc=" << transport.timing.anchor_target_qpc
+               << L", last_remote=" << transport.timing.last_remote_time
+               << L", last_target_qpc=" << transport.timing.last_target_qpc
+               << L", error=" << transport.timing.last_error
                << L"\n"
                << L"  audio: configured=" << (audio.configured ? L"yes" : L"no")
                << L", started=" << (audio.started ? L"yes" : L"no")
                << L", accepted_frames=" << audio.accepted_frames
                << L", rejected_frames=" << audio.rejected_frames
+               << L", scheduled_frames=" << audio.scheduled_frames
+               << L", schedule_late_frames=" << audio.late_scheduled_frames
+               << L", schedule_wait_us=" << audio.scheduling_wait_microseconds
+               << L", schedule_max_late_us="
+               << audio.maximum_schedule_lateness_microseconds
+               << L", last_target_qpc=" << audio.last_target_qpc
                << L", queue_frames=" << audio.output.current_buffer_depth_frames
                << L", underruns=" << audio.output.underrun_count
                << L", latency_us=" << audio.output.output_latency_microseconds
@@ -649,7 +680,10 @@ void PrintRecoveryDiagnostics(
         .device_id = command.device_id,
         .follow_default_device = command.device_id.empty(),
     }};
-    WindowsRtpTransportController media_transport{audio_sink};
+    WindowsRtpTransportController media_transport{
+        audio_sink,
+        {.enable_buffered_timing = command.experimental_buffered_timing,
+         .buffered_timing_milliseconds = command.buffered_timing_milliseconds}};
     airplaywin::protocol::AirPlayControlService control{
         authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
         airplaywin::protocol::ParserLimits{}, &media_transport};
@@ -719,7 +753,11 @@ void PrintRecoveryDiagnostics(
     std::wcout << L"Control receiver ready: RAOP TCP " << command.raop_port
                << L", AirPlay TCP " << command.airplay_port
                << L". Authentication is open; unencrypted RTP/L16 development transport is "
-                  L"enabled.\n";
+                  L"enabled. Buffered timing experiment: "
+               << (command.experimental_buffered_timing ? L"on" : L"off")
+               << (command.experimental_buffered_timing
+                       ? L" (local RTP-to-QPC anchor only; no PTP).\n"
+                       : L".\n");
     const auto deadline =
         command.run_until_stopped
             ? std::chrono::steady_clock::time_point::max()

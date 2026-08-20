@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "core/audio/IAudioFrameSink.h"
@@ -34,6 +35,7 @@ public:
                             frame.interleaved_samples.end());
             frame_counts_.push_back(frame.frame_count);
             timestamps_.push_back(frame.rtp_timestamp);
+            targets_.push_back(frame.target_qpc);
             concealed_.push_back(frame.concealed);
             submitted_frames_ += frame.frame_count;
             return true;
@@ -86,6 +88,11 @@ public:
         return concealed_;
     }
 
+    [[nodiscard]] std::vector<std::optional<std::int64_t>> Targets() const {
+        std::scoped_lock lock{mutex_};
+        return targets_;
+    }
+
     [[nodiscard]] float Volume() const noexcept {
         std::scoped_lock lock{mutex_};
         return volume_;
@@ -116,6 +123,7 @@ private:
     std::vector<float> samples_{};
     std::vector<std::uint32_t> frame_counts_{};
     std::vector<std::uint32_t> timestamps_{};
+    std::vector<std::optional<std::int64_t>> targets_{};
     std::vector<bool> concealed_{};
 };
 

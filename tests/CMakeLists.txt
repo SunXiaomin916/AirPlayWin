@@ -4,6 +4,7 @@ add_executable(airplaywin_tests
     TestAudioEpoch.cpp
     TestAudioRingBuffer.cpp
     TestAudioTransitionGuard.cpp
+    TestBufferedTiming.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
     TestIocpTcpServer.cpp

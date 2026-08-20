@@ -17,6 +17,8 @@ struct WindowsRtpTransportOptions final {
     std::string bind_address{"0.0.0.0"};
     std::size_t jitter_capacity_packets{256U};
     std::size_t jitter_target_packets{4U};
+    bool enable_buffered_timing{false};
+    std::uint32_t buffered_timing_milliseconds{120U};
 };
 
 class WindowsRtpTransportController final

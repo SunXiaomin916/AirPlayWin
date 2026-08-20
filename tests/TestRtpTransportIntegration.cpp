@@ -91,7 +91,9 @@ void TestRtpTransportIntegration() {
     WindowsRtpTransportController controller{
         sink, WindowsRtpTransportOptions{.bind_address = "127.0.0.1",
                                          .jitter_capacity_packets = 8U,
-                                         .jitter_target_packets = 2U}};
+                                         .jitter_target_packets = 2U,
+                                         .enable_buffered_timing = true,
+                                         .buffered_timing_milliseconds = 20U}};
     airplaywin::crypto::OpenSessionAuthenticator authenticator;
     AirPlayControlService service{authenticator,
                                   airplaywin::session::ActiveSessionPolicy::RejectNew,
@@ -173,6 +175,9 @@ void TestRtpTransportIntegration() {
     APW_EXPECT(transport.retransmitted_packets == 1U);
     APW_EXPECT(transport.has_sequence_anchor && transport.sequence_anchor == 1U);
     APW_EXPECT(transport.has_timestamp_anchor && transport.timestamp_anchor == 10'000U);
+    APW_EXPECT(transport.timing.enabled && transport.timing.locked);
+    APW_EXPECT(transport.timing.target_buffer_microseconds == 20'000U);
+    APW_EXPECT(transport.timing.mapped_packets == 6U);
 
     const auto volume = service.OnBytes(
         kConnection,

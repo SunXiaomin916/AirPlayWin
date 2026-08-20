@@ -15,3 +15,9 @@ stream. RECORD, resumed RECORD, and FLUSH can reset the packet timeline; wrap-aw
 and timestamp gates reject older packets before jitter-buffer insertion. A four-byte RAOP
 retransmission wrapper is removed before normal RTP validation. The control-port handler may
 forward only those wrapped audio packets; timing traffic remains isolated.
+
+Phase 7 can inject `ITimingEngine` into `RtpAudioStream`. In the explicit experimental mode,
+every decoded or concealed frame maps its RTP sampling timestamp to a target QPC value before it
+crosses `IAudioFrameSink`. With the mode disabled, the established arrival-time behavior is
+unchanged. The reserved timing UDP socket is still isolated and counted; S7 does not parse or
+claim PTP timing traffic.

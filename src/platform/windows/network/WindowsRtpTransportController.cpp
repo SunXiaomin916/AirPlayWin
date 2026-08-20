@@ -7,7 +7,9 @@
 #include <utility>
 
 #include "core/audio/PcmL16Decoder.h"
+#include "core/timing/BufferedRtpTimingEngine.h"
 #include "core/transport/RtpAudioStream.h"
+#include "platform/windows/timing/QpcClock.h"
 
 namespace airplaywin::windows::network {
 
@@ -28,7 +30,10 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     if (request.connection_id == 0U || !request.format.IsValid() ||
         request.format.codec != airplaywin::audio::AudioCodec::PcmL16BigEndian ||
         options_.jitter_capacity_packets < 4U || options_.jitter_target_packets == 0U ||
-        options_.jitter_target_packets >= options_.jitter_capacity_packets) {
+        options_.jitter_target_packets >= options_.jitter_capacity_packets ||
+        (options_.enable_buffered_timing &&
+         (options_.buffered_timing_milliseconds < 20U ||
+          options_.buffered_timing_milliseconds > 2'000U))) {
         return {.error = AudioTransportSetupError::InvalidRequest};
     }
     std::scoped_lock lock{mutex_};
@@ -42,6 +47,15 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         return {.error = AudioTransportSetupError::InvalidRequest};
     }
 
+    std::unique_ptr<airplaywin::timing::ITimingEngine> timing_engine;
+    if (options_.enable_buffered_timing) {
+        timing_engine = std::make_unique<airplaywin::timing::BufferedRtpTimingEngine>(
+            airplaywin::timing::BufferedRtpTimingConfig{
+                .remote_clock_rate = request.format.sample_rate,
+                .target_buffer_milliseconds = options_.buffered_timing_milliseconds,
+            },
+            std::make_unique<airplaywin::windows::timing::QpcClockSource>());
+    }
     auto stream = std::make_unique<airplaywin::transport::RtpAudioStream>(
         airplaywin::transport::RtpAudioStreamConfig{
             .connection_id = request.connection_id,
@@ -52,7 +66,8 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
                  .clock_rate = request.format.sample_rate},
             .allowed_peer_ipv4_network_order = allowed_peer.s_addr,
         },
-        std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink_);
+        std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink_,
+        std::move(timing_engine));
     if (!stream->Start()) {
         last_error_ = stream->Diagnostics().last_error;
         return {.error = AudioTransportSetupError::AudioSinkFailure};

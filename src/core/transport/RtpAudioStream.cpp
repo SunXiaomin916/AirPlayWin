@@ -10,10 +10,12 @@ namespace airplaywin::transport {
 
 RtpAudioStream::RtpAudioStream(RtpAudioStreamConfig config,
                                std::unique_ptr<audio::IAudioDecoder> decoder,
-                               audio::IAudioFrameSink& sink)
+                               audio::IAudioFrameSink& sink,
+                               std::unique_ptr<timing::ITimingEngine> timing_engine)
     : config_(config),
       decoder_(std::move(decoder)),
       sink_(sink),
+      timing_engine_(std::move(timing_engine)),
       jitter_buffer_(config.jitter_buffer) {
     if (config_.connection_id == 0U || !config_.format.IsValid() || !decoder_) {
         throw std::invalid_argument("invalid RTP audio stream configuration");
@@ -85,6 +87,10 @@ void RtpAudioStream::Resume(const AudioTimelineAnchor& anchor) noexcept {
         if (!anchor.IsEmpty()) {
             ResetPacketTimeline(anchor);
             sink_.Flush();
+        } else if (timing_engine_) {
+            // Without a remote wall clock, a local buffered anchor cannot survive an
+            // arbitrary RTSP pause. Re-lock on the first resumed packet.
+            timing_engine_->Reset(std::nullopt);
         }
         sink_.Resume();
     }
@@ -202,6 +208,8 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .decoder_errors = decoder_errors_.load(std::memory_order_relaxed),
         .sink_backpressure_events = sink_backpressure_events_.load(std::memory_order_relaxed),
         .jitter_buffer = jitter_buffer_.Diagnostics(),
+        .timing = timing_engine_ ? timing_engine_->Diagnostics()
+                                 : timing::TimingDiagnostics{},
         .last_error = last_error_.load(std::memory_order_relaxed),
     };
 }
@@ -221,6 +229,12 @@ void RtpAudioStream::ResetPacketTimeline(const AudioTimelineAnchor& anchor) noex
                                 ? (std::uint64_t{1U} << 32U) | *anchor.rtp_timestamp
                                 : 0U,
                             std::memory_order_release);
+    if (timing_engine_) {
+        timing_engine_->Reset(
+            anchor.rtp_timestamp.has_value()
+                ? std::optional<std::uint64_t>{*anchor.rtp_timestamp}
+                : std::optional<std::uint64_t>{});
+    }
     timeline_resets_.fetch_add(1U, std::memory_order_relaxed);
 }
 
@@ -299,11 +313,15 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
         }
         const auto samples = static_cast<std::size_t>(result.frame_count) *
                              config_.format.channel_count;
+        const auto target_qpc = timing_engine_
+                                    ? timing_engine_->RemoteToLocalQpc(rtp_timestamp)
+                                    : std::optional<std::int64_t>{};
         const audio::DecodedAudioFrameView decoded{
             .interleaved_samples = std::span<const float>{decode_storage_.data(), samples},
             .frame_count = result.frame_count,
             .rtp_timestamp = rtp_timestamp,
             .extended_sequence_number = packet.extended_sequence_number,
+            .target_qpc = target_qpc,
             .concealed = kind == JitterPopKind::Missing,
         };
         if (!SubmitWithBackpressure(decoded)) {

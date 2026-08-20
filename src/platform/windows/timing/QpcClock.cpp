@@ -22,4 +22,12 @@ double QpcClock::ToSeconds(const std::int64_t ticks) noexcept {
     return frequency > 0 ? static_cast<double>(ticks) / static_cast<double>(frequency) : 0.0;
 }
 
+std::int64_t QpcClockSource::Now() const noexcept {
+    return QpcClock::Now();
+}
+
+std::int64_t QpcClockSource::Frequency() const noexcept {
+    return QpcClock::Frequency();
+}
+
 }  // namespace airplaywin::windows::timing

@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/audio/AudioStreamTypes.h"
+#include "core/timing/TimingTypes.h"
 #include "core/transport/IControlConnectionHandler.h"
 #include "core/transport/RtpJitterBuffer.h"
 
@@ -77,6 +78,7 @@ struct AudioTransportDiagnostics final {
     std::uint64_t control_datagrams{0U};
     std::uint64_t timing_datagrams{0U};
     RtpJitterBufferDiagnostics jitter_buffer{};
+    timing::TimingDiagnostics timing{};
     std::uint32_t last_error{0U};
 };
 

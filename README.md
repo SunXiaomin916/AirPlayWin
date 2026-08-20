@@ -1,10 +1,11 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 6
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 7
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
-timeline integration, plus operational recovery and a repeatable x64 beta package. Pairing,
-Apple codec decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
+timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
+buffered RTP-to-QPC timing experiment. Pairing, Apple codec decoding, encryption, PTP,
+multi-room, and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -78,8 +79,9 @@ Apple codec decoding, encryption, PTP, multi-room, and WinUI are not implemented
 - RECORD returns `Audio-Latency: 11025` for the classic L16 development profile.
 - `text/parameters` volume supports multiline SET and query GET; changes remain sample-ramped
   at the bottom audio transition guard.
-- Decoded frames carry an optional target QPC scheduling field. Phase 5 uses arrival QPC while
-  the deferred timing engine will populate an actual sender-clock mapping.
+- Decoded frames carry an optional target QPC scheduling field. Phase 5 uses arrival QPC; phase
+  7 can populate a local buffered RTP timeline while full sender-clock synchronization remains
+  deferred.
 - The platform composition boundary is dependency-injectable for tests. A full automated path
   now crosses RTP -> L16 decode -> WindowsAudioStreamSink -> WindowsAudioEngine -> AudioEngine
   -> IAudioOutput and verifies epoch, pause/resume, flush, volume, and stale-timeline rejection.
@@ -100,6 +102,20 @@ Apple codec decoding, encryption, PTP, multi-room, and WinUI are not implemented
 - CMake install rules, CPack ZIP output, and guarded PowerShell install/uninstall scripts provide
   the first per-user x64 beta deployment path.
 
+## Phase 7 capabilities
+
+- `ITimingEngine` and `IMonotonicClock` keep presentation-time math platform independent;
+  production uses an injected Windows QPC source while tests use a deterministic manual clock.
+- The opt-in `BufferedRtpTimingEngine` maps 32-bit RTP audio timestamps to local target QPC
+  values with wrap-safe arithmetic and a configurable 20–2,000 ms local buffer.
+- RECORD, anchored resume, FLUSH, pause/resume re-lock, and teardown maintain explicit timing
+  generations aligned with the packet timeline and AudioEngine epoch boundary.
+- Decoded and concealed frames carry mapped target QPC values through `IAudioFrameSink`.
+- `WindowsAudioStreamSink` waits on the non-real-time decoder worker until the safe submission
+  window; scheduling can be cancelled by a concurrent timeline transition.
+- Timing lock, target buffer, mapped/late counts, maximum lateness, scheduled frames, wait time,
+  and last target QPC are observable in runtime diagnostics.
+
 ## Architecture
 
 ```text
@@ -110,8 +126,9 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
                       WindowsRtpTransportController -> IocpUdpReceiver
                                                         |
                               RtpAudioStream <- RtpJitterBuffer
-                                    |
-                              IAudioDecoder (L16)
+                                    | <-> ITimingEngine
+                                    |      RTP time -> target QPC
+                                    IAudioDecoder (L16)
                                     |
                          float32 IAudioFrameSink
                                     v
@@ -189,7 +206,7 @@ ctest --preset debug
 Warnings are compiled as errors (`/W4 /WX`). No third-party packages are required in the
 current phases.
 
-Create the phase 6 x64 beta ZIP after the Release build:
+Create the phase 7 x64 experimental beta ZIP after the Release build:
 
 ```powershell
 cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
@@ -264,6 +281,16 @@ After an L16 SDP `ANNOUNCE` and UDP `SETUP`, the process accepts RTP on its nego
 `--device "{endpoint-id}"` to select a fixed output endpoint; otherwise the sink follows the
 default endpoint. The process prints control, RTP, jitter-buffer, decoder, and WASAPI metrics.
 `--raop-port` and `--airplay-port` override the control ports.
+
+Enable the S7 local buffered-timing experiment with a 120 ms presentation reserve:
+
+```powershell
+.\build\vs2022-x64\Debug\AirPlayWin.exe --serve --experimental-buffered-timing `
+    --buffered-timing-ms 120 --name "Living Room PC" --duration 300
+```
+
+This flag does not advertise complete AirPlay 2 timing. It anchors one RTP audio stream to local
+QPC; the reserved timing UDP socket remains isolated until the later PTP/ClockServo stage.
 
 The deterministic sender can inject normal, lost, duplicate, reordered, timeline-anchored,
 and retransmission-wrapped L16 packets:
@@ -343,6 +370,25 @@ mutation, actual machine sleep, Wi-Fi/DHCP transitions, and physical USB/default
 changes are deliberately left as manual acceptance because the automated suite does not change
 host configuration or hardware state.
 
+Phase 7 adds pure timing-model tests, 32-bit timestamp-wrap cases, a deterministic +100 ppm
+clock simulation, pause/FLUSH generation checks, target-QPC propagation through RTP decode, and
+an inspectable Windows sink scheduling test. The complete suite now contains 23 test modules;
+Debug and Release CTest passed, followed by 50 consecutive Release suite runs in 43.53 seconds.
+After adding explicit in-flight scheduling-cancellation coverage, another 20 consecutive Release
+runs passed. The existing no-timing path remains covered and is the default unless the
+experimental CLI flag is supplied.
+
+A real loopback `ANNOUNCE -> SETUP -> RECORD -> RTP/L16` application smoke used a 500 ms local
+reserve and delivered 30 packets / 10,560 frames through IOCP, decode, QPC scheduling,
+AudioEngine, and WASAPI. All frames were scheduled with zero late or rejected frames, the sink
+recorded 697,824 microseconds of active scheduling wait, and protocol/output errors remained
+zero. An intentionally low 80 ms run with a slow PowerShell packet producer reported late
+mappings as designed; buffer selection and cold-sender behavior remain experimental calibration
+work rather than a latency guarantee.
+
+CPack generated `AirPlayWin-0.7.0-windows-x64.zip`, and the executable, installer scripts, and
+documentation entries were inspected in the archive.
+
 ## Current boundary
 
 Shared mode remains the only enabled WASAPI mode. The backend uses the application format
@@ -350,8 +396,8 @@ with the Windows audio engine's shared-mode format converter. Exclusive mode and
 `IAudioClient3` minimum-period tuning remain later audio-backend work.
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
-absent pairing, crypto, PTP, or Apple codec modules. Phase 6 hardens the existing development
-receiver but does not expand its advertised media/security capabilities. Phase 5 accepts
+absent pairing, crypto, PTP, or Apple codec modules. Phase 7 adds only a local single-stream
+buffered timing experiment and does not expand advertised media/security capabilities. Phase 5 accepts
 inbound retransmitted audio on the control port, but it does not originate resend requests or
 implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
 encryption, codec, and timing work; physical iPhone/iPad/Mac interoperability is therefore not
@@ -361,4 +407,5 @@ See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) 
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
 [phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries, and
 [phase 5](docs/phase-5.md) for AudioEngine/timeline/control integration, and
-[phase 6](docs/phase-6.md) for lifecycle recovery, diagnostics, and beta deployment.
+[phase 6](docs/phase-6.md) for lifecycle recovery, diagnostics, and beta deployment, and
+[phase 7](docs/phase-7.md) for the buffered RTP-to-QPC timing experiment.

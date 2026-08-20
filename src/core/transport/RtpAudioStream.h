@@ -10,6 +10,7 @@
 
 #include "core/audio/IAudioDecoder.h"
 #include "core/audio/IAudioFrameSink.h"
+#include "core/timing/ITimingEngine.h"
 #include "core/transport/IAudioStream.h"
 #include "core/transport/RtpJitterBuffer.h"
 
@@ -26,7 +27,8 @@ class RtpAudioStream final : public IAudioStream {
 public:
     RtpAudioStream(RtpAudioStreamConfig config,
                    std::unique_ptr<audio::IAudioDecoder> decoder,
-                   audio::IAudioFrameSink& sink);
+                   audio::IAudioFrameSink& sink,
+                   std::unique_ptr<timing::ITimingEngine> timing_engine = {});
     ~RtpAudioStream() override;
 
     RtpAudioStream(const RtpAudioStream&) = delete;
@@ -54,6 +56,7 @@ private:
     RtpAudioStreamConfig config_{};
     std::unique_ptr<audio::IAudioDecoder> decoder_;
     audio::IAudioFrameSink& sink_;
+    std::unique_ptr<timing::ITimingEngine> timing_engine_{};
     RtpJitterBuffer jitter_buffer_;
     std::vector<float> decode_storage_{};
     mutable std::mutex state_mutex_{};
