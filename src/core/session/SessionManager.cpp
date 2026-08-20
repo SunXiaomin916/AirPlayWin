@@ -79,6 +79,28 @@ bool SessionManager::SetVolume(const transport::ConnectionId connection_id,
     return true;
 }
 
+bool SessionManager::SetStream(const transport::ConnectionId connection_id,
+                               const std::uint32_t sample_rate,
+                               const std::uint16_t channel_count,
+                               const std::uint8_t payload_type,
+                               const std::uint16_t audio_port,
+                               const std::uint16_t control_port,
+                               const std::uint16_t timing_port) {
+    std::scoped_lock lock{mutex_};
+    const auto iterator = sessions_.find(connection_id);
+    if (iterator == sessions_.end()) {
+        return false;
+    }
+    iterator->second.stream_sample_rate = sample_rate;
+    iterator->second.stream_channel_count = channel_count;
+    iterator->second.stream_payload_type = payload_type;
+    iterator->second.server_audio_port = audio_port;
+    iterator->second.server_control_port = control_port;
+    iterator->second.server_timing_port = timing_port;
+    iterator->second.last_activity = std::chrono::steady_clock::now();
+    return true;
+}
+
 ActivationResult SessionManager::Activate(const transport::ConnectionId connection_id) {
     std::scoped_lock lock{mutex_};
     const auto requested = sessions_.find(connection_id);

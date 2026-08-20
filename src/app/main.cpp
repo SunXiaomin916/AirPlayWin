@@ -21,9 +21,11 @@
 #include "core/protocol/AirPlayControlService.h"
 #include "platform/windows/audio/WindowsAudioDeviceEnumerator.h"
 #include "platform/windows/audio/WindowsAudioEngine.h"
+#include "platform/windows/audio/WindowsAudioStreamSink.h"
 #include "platform/windows/network/WindowsDiscoveryService.h"
 #include "platform/windows/network/IocpTcpServer.h"
 #include "platform/windows/network/WindowsNetworkInterfaceEnumerator.h"
+#include "platform/windows/network/WindowsRtpTransportController.h"
 #include "platform/windows/timing/QpcClock.h"
 
 namespace {
@@ -34,9 +36,11 @@ using airplaywin::audio::TestSignalGenerator;
 using airplaywin::windows::audio::WasapiOutputOptions;
 using airplaywin::windows::audio::WindowsAudioDeviceEnumerator;
 using airplaywin::windows::audio::WindowsAudioEngine;
+using airplaywin::windows::audio::WindowsAudioStreamSink;
 using airplaywin::windows::network::WindowsDiscoveryService;
 using airplaywin::windows::network::IocpTcpServer;
 using airplaywin::windows::network::WindowsNetworkInterfaceEnumerator;
+using airplaywin::windows::network::WindowsRtpTransportController;
 using airplaywin::windows::timing::QpcClock;
 
 struct CommandLine final {
@@ -59,7 +63,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-3 audio, discovery, and control-session probe\n\n"
+        << L"AirPlayWin phase-4 audio transport development receiver\n\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>] [--signal 440|1000|silence|impulse|sweep]\n"
@@ -69,6 +73,7 @@ void PrintUsage() {
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --serve [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
+        << L"             [--device <endpoint-id>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--diagnostics-interval <seconds>] [--include-virtual-interfaces]\n\n"
         << L"Examples:\n"
@@ -415,7 +420,9 @@ void PrintDiscoveryDiagnostics(const airplaywin::discovery::DiscoveryDiagnostics
 void PrintControlDiagnostics(
     const airplaywin::protocol::ControlDiagnostics& control,
     const airplaywin::windows::network::IocpTcpServerDiagnostics& raop,
-    const airplaywin::windows::network::IocpTcpServerDiagnostics& airplay) {
+    const airplaywin::windows::network::IocpTcpServerDiagnostics& airplay,
+    const airplaywin::windows::audio::AudioStreamSinkDiagnostics& audio) {
+    const auto& transport = control.transport;
     std::wcout << L"control: sessions=" << control.sessions.active_connections
                << L", requests=" << control.received_requests
                << L", parse_errors=" << control.parse_errors
@@ -432,6 +439,25 @@ void PrintControlDiagnostics(
                << airplay.accepted_connections << L", rx=" << airplay.received_bytes
                << L", tx=" << airplay.sent_bytes << L", timeouts="
                << airplay.idle_timeouts << L", errors=" << airplay.transport_errors << L"\n"
+               << L"  RTP " << transport.server_audio_port
+               << L": configured=" << (transport.configured ? L"yes" : L"no")
+               << L", recording=" << (transport.recording ? L"yes" : L"no")
+               << L", packets=" << transport.datagrams_received
+               << L", decoded=" << transport.decoded_packets
+               << L", concealed=" << transport.concealed_packets
+               << L", lost=" << transport.jitter_buffer.lost_packets
+               << L", late=" << transport.jitter_buffer.late_packets
+               << L", duplicate=" << transport.jitter_buffer.duplicate_packets
+               << L", reordered=" << transport.jitter_buffer.reordered_packets
+               << L", jitter_us="
+               << transport.jitter_buffer.interarrival_jitter_microseconds << L"\n"
+               << L"  audio: configured=" << (audio.configured ? L"yes" : L"no")
+               << L", started=" << (audio.started ? L"yes" : L"no")
+               << L", accepted_frames=" << audio.accepted_frames
+               << L", rejected_frames=" << audio.rejected_frames
+               << L", queue_frames=" << audio.output.current_buffer_depth_frames
+               << L", underruns=" << audio.output.underrun_count
+               << L", latency_us=" << audio.output.output_latency_microseconds << L"\n"
                << std::flush;
 }
 
@@ -441,7 +467,14 @@ void PrintControlDiagnostics(
         return 15;
     }
     airplaywin::crypto::OpenSessionAuthenticator authenticator;
-    airplaywin::protocol::AirPlayControlService control{authenticator};
+    WindowsAudioStreamSink audio_sink{WasapiOutputOptions{
+        .device_id = command.device_id,
+        .follow_default_device = command.device_id.empty(),
+    }};
+    WindowsRtpTransportController media_transport{audio_sink};
+    airplaywin::protocol::AirPlayControlService control{
+        authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
+        airplaywin::protocol::ParserLimits{}, &media_transport};
     IocpTcpServer raop_server{control};
     IocpTcpServer airplay_server{control};
     if (!raop_server.Start({.bind_address = "0.0.0.0", .port = command.raop_port})) {
@@ -479,7 +512,8 @@ void PrintControlDiagnostics(
 
     std::wcout << L"Control receiver ready: RAOP TCP " << command.raop_port
                << L", AirPlay TCP " << command.airplay_port
-               << L". Authentication is open; pairing and media transport are not enabled.\n";
+               << L". Authentication is open; unencrypted RTP/L16 development transport is "
+                  L"enabled.\n";
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(command.duration_seconds);
     const auto interval = std::chrono::seconds(command.diagnostics_interval_seconds);
@@ -487,7 +521,7 @@ void PrintControlDiagnostics(
     while (std::chrono::steady_clock::now() < deadline) {
         if (std::chrono::steady_clock::now() >= next_diagnostics) {
             PrintControlDiagnostics(control.Diagnostics(), raop_server.Diagnostics(),
-                                    airplay_server.Diagnostics());
+                                    airplay_server.Diagnostics(), audio_sink.Diagnostics());
             next_diagnostics += interval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -496,7 +530,8 @@ void PrintControlDiagnostics(
     const auto raop_diagnostics = raop_server.Diagnostics();
     const auto airplay_diagnostics = airplay_server.Diagnostics();
     const auto control_diagnostics = control.Diagnostics();
-    PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics);
+    PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics,
+                            audio_sink.Diagnostics());
     discovery.Stop();
     airplay_server.Stop();
     raop_server.Stop();

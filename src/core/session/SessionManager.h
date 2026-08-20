@@ -24,6 +24,13 @@ public:
                                   SessionState next);
     [[nodiscard]] bool SetState(transport::ConnectionId connection_id, SessionState state);
     [[nodiscard]] bool SetVolume(transport::ConnectionId connection_id, double volume_db);
+    [[nodiscard]] bool SetStream(transport::ConnectionId connection_id,
+                                 std::uint32_t sample_rate,
+                                 std::uint16_t channel_count,
+                                 std::uint8_t payload_type,
+                                 std::uint16_t audio_port,
+                                 std::uint16_t control_port,
+                                 std::uint16_t timing_port);
     [[nodiscard]] ActivationResult Activate(transport::ConnectionId connection_id);
     void Close(transport::ConnectionId connection_id) noexcept;
 

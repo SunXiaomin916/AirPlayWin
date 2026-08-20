@@ -11,4 +11,10 @@ interfaces can be included explicitly for development.
 `IocpTcpServer` is the phase 3 RTSP/HTTP control transport. Accepted sockets use overlapped
 `WSARecv`/`WSASend` on a completion port and communicate with core code only through
 `IControlConnectionHandler`. Connection counts, receive buffers, pending writes, and idle time
-are bounded. RTP packet transport remains deferred.
+are bounded.
+
+`IocpUdpReceiver` is the phase 4 datagram adapter. It posts a bounded set of preallocated
+overlapped `WSARecvFrom` operations and forwards completed spans through
+`IUdpDatagramHandler`. `WindowsRtpTransportController` composes one audio receiver, reserved
+control/timing receivers, `RtpAudioStream`, and the platform audio sink for the active session.
+The IOCP callback never decodes audio.

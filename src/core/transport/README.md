@@ -4,6 +4,8 @@
 delivers opaque byte spans through this interface; the protocol layer returns complete writes
 and a close-after-write decision.
 
-Future audio packet ordering, loss accounting, and jitter buffering remain separate from this
-control transport. They will emit decoded/scheduled buffers to the core audio facade and cannot
-include WASAPI headers.
+Phase 4 adds the independent audio side: `RtpPacket`, fixed-capacity `RtpJitterBuffer`,
+`RtpAudioStream`, `IUdpDatagramHandler`, `IAudioStream`, and
+`IAudioTransportController`. UDP callbacks parse/filter/copy only. A dedicated stream worker
+performs ordered delivery, loss concealment through `IAudioDecoder`, and float32 submission
+through `IAudioFrameSink`. This directory contains no Winsock, IOCP, or WASAPI headers.

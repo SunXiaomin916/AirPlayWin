@@ -43,6 +43,12 @@ struct SessionSnapshot final {
     std::uint64_t request_count{0U};
     std::string last_method{};
     double volume_db{0.0};
+    std::uint32_t stream_sample_rate{0U};
+    std::uint16_t stream_channel_count{0U};
+    std::uint8_t stream_payload_type{0U};
+    std::uint16_t server_audio_port{0U};
+    std::uint16_t server_control_port{0U};
+    std::uint16_t server_timing_port{0U};
     bool owns_playback{false};
     std::chrono::steady_clock::time_point last_activity{};
 };

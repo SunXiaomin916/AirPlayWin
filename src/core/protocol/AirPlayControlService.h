@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -9,6 +10,7 @@
 #include "core/protocol/IncrementalRtspParser.h"
 #include "core/session/SessionManager.h"
 #include "core/transport/IControlConnectionHandler.h"
+#include "core/transport/IAudioTransportController.h"
 
 namespace airplaywin::protocol {
 
@@ -19,6 +21,7 @@ struct ControlDiagnostics final {
     std::uint64_t rejected_requests{0U};
     std::uint64_t unsupported_requests{0U};
     std::uint64_t pairing_requests{0U};
+    transport::AudioTransportDiagnostics transport{};
     std::string last_error{};
 };
 
@@ -27,7 +30,8 @@ public:
     explicit AirPlayControlService(
         const crypto::ISessionAuthenticator& authenticator,
         session::ActiveSessionPolicy policy = session::ActiveSessionPolicy::RejectNew,
-        ParserLimits parser_limits = {});
+        ParserLimits parser_limits = {},
+        transport::IAudioTransportController* audio_transport = nullptr);
 
     void OnConnected(transport::ConnectionId connection_id,
                      std::string_view peer_address) override;
@@ -44,6 +48,7 @@ private:
     struct ConnectionContext final {
         explicit ConnectionContext(ParserLimits limits) : parser(limits) {}
         IncrementalRtspParser parser;
+        std::optional<audio::EncodedAudioFormat> audio_format{};
     };
 
     [[nodiscard]] transport::ControlReply HandleRequest(
@@ -59,6 +64,7 @@ private:
     const crypto::ISessionAuthenticator& authenticator_;
     ParserLimits parser_limits_{};
     session::SessionManager sessions_;
+    transport::IAudioTransportController* audio_transport_{nullptr};
     mutable std::mutex mutex_{};
     std::unordered_map<transport::ConnectionId, ConnectionContext> contexts_{};
     std::uint64_t received_requests_{0U};

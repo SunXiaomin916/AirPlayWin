@@ -7,7 +7,14 @@ add_executable(airplaywin_tests
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
     TestIocpTcpServer.cpp
+    TestIocpUdpReceiver.cpp
+    TestPcmL16Decoder.cpp
+    TestRtpAudioStream.cpp
+    TestRtpJitterBuffer.cpp
+    TestRtpPacket.cpp
+    TestRtpTransportIntegration.cpp
     TestRtspParser.cpp
+    TestSdpAndTransport.cpp
     TestSessionManager.cpp
     TestSignalGenerator.cpp
     TestWindowsDiscovery.cpp

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.3.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.4.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -16,6 +16,7 @@ add_library(airplaywin_core STATIC
     src/core/audio/AudioEpoch.cpp
     src/core/audio/AudioRingBuffer.cpp
     src/core/audio/AudioTransitionGuard.cpp
+    src/core/audio/PcmL16Decoder.cpp
     src/core/audio/TestSignalGenerator.cpp
     src/core/crypto/OpenSessionAuthenticator.cpp
     src/core/discovery/AirPlayServiceRecords.cpp
@@ -23,8 +24,13 @@ add_library(airplaywin_core STATIC
     src/core/protocol/AirPlayControlService.cpp
     src/core/protocol/IncrementalRtspParser.cpp
     src/core/protocol/RtspResponseBuilder.cpp
+    src/core/protocol/RtspTransport.cpp
     src/core/protocol/RtspTypes.cpp
+    src/core/protocol/SdpAudioParser.cpp
     src/core/session/SessionManager.cpp
+    src/core/transport/RtpAudioStream.cpp
+    src/core/transport/RtpJitterBuffer.cpp
+    src/core/transport/RtpPacket.cpp
 )
 
 target_include_directories(airplaywin_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -34,10 +40,13 @@ airplaywin_set_warnings(airplaywin_core)
 add_library(airplaywin_windows STATIC
     src/platform/windows/audio/WasapiAudioOutput.cpp
     src/platform/windows/audio/WindowsAudioEngine.cpp
+    src/platform/windows/audio/WindowsAudioStreamSink.cpp
     src/platform/windows/audio/WindowsAudioDeviceEnumerator.cpp
     src/platform/windows/network/WindowsDiscoveryService.cpp
     src/platform/windows/network/IocpTcpServer.cpp
+    src/platform/windows/network/IocpUdpReceiver.cpp
     src/platform/windows/network/WindowsNetworkInterfaceEnumerator.cpp
+    src/platform/windows/network/WindowsRtpTransportController.cpp
     src/platform/windows/timing/QpcClock.cpp
 )
 

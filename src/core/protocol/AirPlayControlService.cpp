@@ -7,6 +7,8 @@
 #include <string_view>
 
 #include "core/protocol/RtspResponseBuilder.h"
+#include "core/protocol/RtspTransport.h"
+#include "core/protocol/SdpAudioParser.h"
 
 namespace airplaywin::protocol {
 
@@ -89,8 +91,12 @@ namespace {
 AirPlayControlService::AirPlayControlService(
     const crypto::ISessionAuthenticator& authenticator,
     const session::ActiveSessionPolicy policy,
-    const ParserLimits parser_limits)
-    : authenticator_(authenticator), parser_limits_(parser_limits), sessions_(policy) {}
+    const ParserLimits parser_limits,
+    transport::IAudioTransportController* const audio_transport)
+    : authenticator_(authenticator),
+      parser_limits_(parser_limits),
+      sessions_(policy),
+      audio_transport_(audio_transport) {}
 
 void AirPlayControlService::OnConnected(const transport::ConnectionId connection_id,
                                         const std::string_view peer_address) {
@@ -176,8 +182,11 @@ transport::ControlReply AirPlayControlService::HandleRequest(
     }
 
     if (EqualsAsciiCaseInsensitive(request.method, "OPTIONS")) {
-        const std::array headers{
-            Header{"Public", "ANNOUNCE, OPTIONS, GET_PARAMETER, SET_PARAMETER, TEARDOWN"}};
+        const std::array headers{Header{
+            "Public", audio_transport_ != nullptr
+                          ? "ANNOUNCE, OPTIONS, SETUP, RECORD, PAUSE, FLUSH, GET_PARAMETER, "
+                            "SET_PARAMETER, TEARDOWN"
+                          : "ANNOUNCE, OPTIONS, GET_PARAMETER, SET_PARAMETER, TEARDOWN"}};
         reply.writes.push_back(StatusResponse(request, 200, "OK", headers, {}, close));
     } else if (EqualsAsciiCaseInsensitive(request.method, "ANNOUNCE")) {
         const auto content_type = request.HeaderValue("Content-Type");
@@ -191,12 +200,23 @@ transport::ControlReply AirPlayControlService::HandleRequest(
             ++rejected_requests_;
             reply.writes.push_back(StatusResponse(request, 400, "Bad Request", {}, {}, close));
         } else {
+            const auto parsed_audio = ParseSdpAudioDescription(request.BodyText());
+            if (audio_transport_ != nullptr && !parsed_audio.has_value()) {
+                ++rejected_requests_;
+                reply.writes.push_back(
+                    StatusResponse(request, 415, "Unsupported Media Type", {}, {}, close));
+                reply.close_after_writes = close;
+                return reply;
+            }
             const auto activation = sessions_.Activate(connection_id);
             if (activation == session::ActivationResult::Rejected) {
                 ++rejected_requests_;
                 reply.writes.push_back(
                     StatusResponse(request, 453, "Not Enough Bandwidth", {}, {}, close));
             } else {
+                if (parsed_audio.has_value()) {
+                    contexts_.at(connection_id).audio_format = *parsed_audio;
+                }
                 static_cast<void>(
                     sessions_.SetState(connection_id, session::SessionState::Announced));
                 const auto snapshot = sessions_.Get(connection_id);
@@ -219,23 +239,131 @@ transport::ControlReply AirPlayControlService::HandleRequest(
                 StatusResponse(request, 451, "Invalid Parameter", {}, {}, close));
         } else {
             static_cast<void>(sessions_.SetVolume(connection_id, *volume));
+            if (audio_transport_ != nullptr) {
+                const auto gain = *volume <= -144.0
+                                      ? 0.0F
+                                      : static_cast<float>(std::pow(10.0, *volume / 20.0));
+                audio_transport_->SetVolume(connection_id, gain);
+            }
             reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "TEARDOWN")) {
+        if (audio_transport_ != nullptr) {
+            audio_transport_->Teardown(connection_id);
+        }
         static_cast<void>(sessions_.SetState(connection_id, session::SessionState::Closing));
         reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, true));
         reply.close_after_writes = true;
         return reply;
     } else if (EqualsAsciiCaseInsensitive(request.method, "SETUP")) {
-        ++unsupported_requests_;
-        reply.writes.push_back(
-            StatusResponse(request, 461, "Unsupported Transport", {}, {}, close));
-    } else if (EqualsAsciiCaseInsensitive(request.method, "RECORD") ||
-               EqualsAsciiCaseInsensitive(request.method, "PAUSE") ||
-               EqualsAsciiCaseInsensitive(request.method, "FLUSH")) {
-        ++unsupported_requests_;
-        reply.writes.push_back(
-            StatusResponse(request, 455, "Method Not Valid in This State", {}, {}, close));
+        const auto session_snapshot = sessions_.Get(connection_id);
+        const auto transport_header = request.HeaderValue("Transport");
+        const auto& context = contexts_.at(connection_id);
+        if (audio_transport_ == nullptr) {
+            ++unsupported_requests_;
+            reply.writes.push_back(
+                StatusResponse(request, 461, "Unsupported Transport", {}, {}, close));
+        } else if (!session_snapshot.has_value() ||
+                   session_snapshot->state != session::SessionState::Announced ||
+                   !context.audio_format.has_value()) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(
+                request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else if (!transport_header.has_value()) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(request, 400, "Bad Request", {}, {}, close));
+        } else {
+            const auto parsed_transport = ParseRecordTransport(*transport_header);
+            if (!parsed_transport.has_value()) {
+                ++rejected_requests_;
+                reply.writes.push_back(
+                    StatusResponse(request, 461, "Unsupported Transport", {}, {}, close));
+            } else {
+                const auto setup = audio_transport_->Setup(
+                    transport::AudioTransportSetupRequest{
+                        .connection_id = connection_id,
+                        .peer_address = session_snapshot->peer_address,
+                        .format = *context.audio_format,
+                        .client_control_port = parsed_transport->client_control_port,
+                        .client_timing_port = parsed_transport->client_timing_port,
+                    });
+                if (!setup.Succeeded()) {
+                    ++rejected_requests_;
+                    reply.writes.push_back(
+                        StatusResponse(request, 500, "Internal Server Error", {}, {}, close));
+                } else {
+                    const auto response_transport = BuildRecordTransportResponse(
+                        setup.server_audio_port, setup.server_control_port,
+                        setup.server_timing_port);
+                    const auto initial_gain = session_snapshot->volume_db <= -144.0
+                                                  ? 0.0F
+                                                  : static_cast<float>(std::pow(
+                                                        10.0,
+                                                        session_snapshot->volume_db / 20.0));
+                    audio_transport_->SetVolume(connection_id, initial_gain);
+                    const std::array headers{
+                        Header{"Transport", response_transport},
+                        Header{"Session", session_snapshot->session_id},
+                    };
+                    static_cast<void>(sessions_.SetStream(
+                        connection_id, context.audio_format->sample_rate,
+                        context.audio_format->channel_count, context.audio_format->payload_type,
+                        setup.server_audio_port, setup.server_control_port,
+                        setup.server_timing_port));
+                    static_cast<void>(
+                        sessions_.SetState(connection_id, session::SessionState::Ready));
+                    reply.writes.push_back(
+                        StatusResponse(request, 200, "OK", headers, {}, close));
+                }
+            }
+        }
+    } else if (EqualsAsciiCaseInsensitive(request.method, "RECORD")) {
+        const auto session_snapshot = sessions_.Get(connection_id);
+        if (audio_transport_ == nullptr || !session_snapshot.has_value() ||
+            (session_snapshot->state != session::SessionState::Ready &&
+             session_snapshot->state != session::SessionState::Paused)) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(
+                request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else {
+            const bool started = session_snapshot->state == session::SessionState::Paused
+                                     ? audio_transport_->Resume(connection_id)
+                                     : audio_transport_->Record(connection_id);
+            if (!started) {
+                ++rejected_requests_;
+                reply.writes.push_back(
+                    StatusResponse(request, 500, "Internal Server Error", {}, {}, close));
+            } else {
+                static_cast<void>(
+                    sessions_.SetState(connection_id, session::SessionState::Streaming));
+                reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+            }
+        }
+    } else if (EqualsAsciiCaseInsensitive(request.method, "PAUSE")) {
+        const auto session_snapshot = sessions_.Get(connection_id);
+        if (audio_transport_ == nullptr || !session_snapshot.has_value() ||
+            session_snapshot->state != session::SessionState::Streaming ||
+            !audio_transport_->Pause(connection_id)) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(
+                request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else {
+            static_cast<void>(sessions_.SetState(connection_id, session::SessionState::Paused));
+            reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+        }
+    } else if (EqualsAsciiCaseInsensitive(request.method, "FLUSH")) {
+        const auto session_snapshot = sessions_.Get(connection_id);
+        if (audio_transport_ == nullptr || !session_snapshot.has_value() ||
+            (session_snapshot->state != session::SessionState::Ready &&
+             session_snapshot->state != session::SessionState::Streaming &&
+             session_snapshot->state != session::SessionState::Paused) ||
+            !audio_transport_->Flush(connection_id)) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(
+                request, 455, "Method Not Valid in This State", {}, {}, close));
+        } else {
+            reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+        }
     } else {
         ++unsupported_requests_;
         reply.writes.push_back(StatusResponse(request, 501, "Not Implemented", {}, {}, close));
@@ -248,6 +376,9 @@ void AirPlayControlService::OnDisconnected(const transport::ConnectionId connect
                                            const transport::DisconnectReason reason) {
     static_cast<void>(reason);
     std::scoped_lock lock{mutex_};
+    if (audio_transport_ != nullptr) {
+        audio_transport_->Teardown(connection_id);
+    }
     contexts_.erase(connection_id);
     sessions_.Close(connection_id);
 }
@@ -261,6 +392,9 @@ ControlDiagnostics AirPlayControlService::Diagnostics() const {
         .rejected_requests = rejected_requests_,
         .unsupported_requests = unsupported_requests_,
         .pairing_requests = pairing_requests_,
+        .transport = audio_transport_ != nullptr
+                         ? audio_transport_->Diagnostics()
+                         : transport::AudioTransportDiagnostics{},
         .last_error = last_error_,
     };
 }

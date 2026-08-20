@@ -1,9 +1,9 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 3
-provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, and the defensive
-RTSP/HTTP control-session foundation. Pairing, RTP, encryption, PTP, media decoding,
-multi-room, and WinUI are not implemented yet.
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 4
+provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
+control sessions, and a runnable unencrypted RTP/L16 transport milestone. Pairing, Apple codec
+decoding, encryption, PTP, multi-room, and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -48,20 +48,42 @@ multi-room, and WinUI are not implemented yet.
 - Winsock2 overlapped receive/send on an IO completion port, keep-alive TCP connections,
   bounded queues/connections, idle timeouts, deterministic shutdown, and transport metrics.
 
+## Phase 4 capabilities
+
+- Defensive RTP v2 parsing, including CSRC, extension, padding, payload limit, sequence,
+  timestamp, SSRC, marker, and payload type.
+- Fixed-capacity jitter buffer with sequence wrap extension, startup prefill, reorder,
+  duplicate, late, loss, overflow, and interarrival-jitter diagnostics.
+- `IAudioDecoder` abstraction plus a signed big-endian RTP/L16 decoder with zero-frame loss
+  concealment and float32 output.
+- `RtpAudioStream` separates IOCP packet receipt from decode/audio submission using a dedicated
+  worker and bounded, preallocated packet/decode storage.
+- Windows overlapped UDP/IOCP receiver and a session-scoped controller for negotiated
+  audio/control/timing UDP ports.
+- RTSP media methods: SDP `ANNOUNCE`, UDP `SETUP`, `RECORD`, `PAUSE`, `FLUSH`, volume
+  `SET_PARAMETER`, and `TEARDOWN`.
+- `IAudioFrameSink` keeps decoded PCM behind `WindowsAudioStreamSink`, so protocol/transport
+  code cannot bypass `AudioEngine`, audio epochs, or `AudioTransitionGuard`.
+- Deterministic L16 packet replay/fault injection and end-to-end RTSP-to-UDP-to-decoder tests.
+
 ## Architecture
 
 ```text
-DNS-SD -> windows::network::IocpTcpServer -> core::protocol parser/service
-                                                |
-                                  core::session::SessionManager
-                                                |
-                                   ISessionAuthenticator
-
-future RTP/decoder
-       |
-       | float32 AudioBuffer + epoch + QPC timestamp
-       v
- core::audio::AudioEngine
+DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
+                              |            |
+                 ISessionAuthenticator    | IAudioTransportController
+                                           v
+                      WindowsRtpTransportController -> IocpUdpReceiver
+                                                        |
+                              RtpAudioStream <- RtpJitterBuffer
+                                    |
+                              IAudioDecoder (L16)
+                                    |
+                         float32 IAudioFrameSink
+                                    v
+                         WindowsAudioStreamSink
+                                    |
+                         core::audio::AudioEngine
              |
              | IAudioOutput only
              v
@@ -72,9 +94,10 @@ future RTP/decoder
  WASAPI shared/event-driven endpoint
 ```
 
-The control service currently stops at the session boundary. It does not call the audio engine;
-future decoded PCM must still enter through `AudioEngine`, preserving the epoch and transition
-guard invariants. The WASAPI render buffer is never exposed to protocol code.
+The control service only calls `IAudioTransportController`; RTP callbacks only parse and queue;
+the decoder worker only calls `IAudioFrameSink`. Decoded PCM must enter through `AudioEngine`,
+preserving epoch and transition-guard invariants. The WASAPI render buffer is never exposed to
+protocol or transport code.
 
 Discovery is independently layered:
 
@@ -169,10 +192,10 @@ Advertise both AirPlay service types for five minutes:
 
 Use `--device-id AA:BB:CC:DD:EE:FF` to override the stable development identity, or
 `--include-virtual-interfaces` when explicitly testing a VM/VPN adapter. The probe only
-advertises without opening control ports. Use the phase 3 receiver probe below for control
-connections.
+advertises without opening control ports. Use the phase 4 receiver probe below for control and
+development-media connections.
 
-## Control-session probe
+## Control and RTP/L16 development receiver
 
 Publish both services and listen on the matching RAOP/AirPlay TCP ports for five minutes:
 
@@ -180,10 +203,21 @@ Publish both services and listen on the matching RAOP/AirPlay TCP ports for five
 .\build\vs2022-x64\Debug\AirPlayWin.exe --serve --name "Living Room PC" --duration 300
 ```
 
-The process prints active sessions, parsed/rejected requests, bytes sent/received, idle
-timeouts, and transport failures. `--raop-port` and `--airplay-port` override the defaults.
+After an L16 SDP `ANNOUNCE` and UDP `SETUP`, the process accepts RTP on its negotiated
+`server_port`, decodes on a separate stream worker, and submits float32 frames to WASAPI. Add
+`--device "{endpoint-id}"` to select a fixed output endpoint; otherwise the sink follows the
+default endpoint. The process prints control, RTP, jitter-buffer, decoder, and WASAPI metrics.
+`--raop-port` and `--airplay-port` override the control ports.
+
+The deterministic sender can inject normal, lost, duplicate, and reordered L16 packets:
+
+```powershell
+.\tools\packet_replay\rtp_l16_replay.ps1 -Port <negotiated-server-port> `
+    -DropEvery 25 -DuplicateEvery 40 -ReorderPairs
+```
+
 The CLI does not create Windows Firewall rules; allow the executable on the intended private
-network profile when testing from another device.
+network profile when testing from another host.
 
 ## Verified on the development machine
 
@@ -211,18 +245,28 @@ timeout. A local `--serve` application smoke bound both advertised ports, comple
 `OPTIONS -> ANNOUNCE -> TEARDOWN` with three 200 responses, recorded one connection / three
 requests / 275 received bytes / 326 sent bytes, and reported zero parser or transport errors.
 
+Phase 4 adds tests for RTP header/extension/padding parsing, jitter-buffer reorder/loss/late/
+duplicate/sequence-wrap behavior, SDP and transport negotiation, L16 decoding and zero
+concealment, stream-worker continuity, a real IOCP UDP loopback receiver, and an end-to-end
+RTSP `ANNOUNCE -> SETUP -> RECORD -> RTP -> FLUSH/PAUSE/TEARDOWN` path.
+
+A local phase 4 application smoke received five 200 responses for `ANNOUNCE`, `SETUP`,
+`RECORD`, `FLUSH`, and `TEARDOWN`; negotiated an ephemeral audio UDP port; and replayed 63
+datagrams with three deterministic drops and two duplicates before clean server shutdown.
+
 ## Current boundary
 
 Shared mode remains the only enabled WASAPI mode. The backend uses the application format
 with the Windows audio engine's shared-mode format converter. Exclusive mode and
 `IAudioClient3` minimum-period tuning remain later audio-backend work.
 
-Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply
-the absent pairing, crypto, PTP, or codec modules. The phase 3 server deliberately returns
-461 for `SETUP`, 455 for media-state methods, and 501 for pairing routes. Consequently it can
-establish and close fixture control sessions but cannot yet receive audio from a current Apple
-sender. Physical iPhone/iPad/Mac interoperability, external-host name collision, and live
-adapter switching remain later/manual checks.
+Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
+absent pairing, crypto, PTP, or Apple codec modules. Phase 4 accepts an unencrypted RTP/L16
+development profile and reserves/counts control and timing UDP ports, but it does not yet
+implement retransmission control, timing replies, or PTP. Current Apple senders normally need
+the deferred pairing, encryption, codec, and timing work; physical iPhone/iPad/Mac
+interoperability is therefore not claimed in this phase.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
-and [phase 3](docs/phase-3.md) for parser/session/IOCP boundaries and verification.
+[phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
+[phase 4](docs/phase-4.md) for RTP, jitter-buffer, decoder, and UDP/IOCP boundaries.
