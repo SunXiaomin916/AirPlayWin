@@ -118,7 +118,17 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
 
             float output = 0.0F;
             if (render_state_ == AudioTransitionState::FadingOut) {
-                output = fade_tail_[channel] * transition_gain;
+                // Preserve the waveform phase while queued PCM is still available. Holding
+                // the final sample as DC for the whole fade produces an audible low-level
+                // thump when high-frequency material is stopped. The frozen tail remains
+                // the safe fallback when the source has already underrun.
+                const auto can_follow_queued_pcm =
+                    fade_out_reason_ == AudioTransition::Stop ||
+                    fade_out_reason_ == AudioTransition::Pause;
+                const auto fade_source = !underrun && can_follow_queued_pcm
+                                             ? input * current_volume_
+                                             : fade_tail_[channel];
+                output = fade_source * transition_gain;
             } else if (render_state_ == AudioTransitionState::FadingIn ||
                        render_state_ == AudioTransitionState::Audible) {
                 output = input * transition_gain * current_volume_;

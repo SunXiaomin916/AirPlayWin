@@ -22,6 +22,10 @@ inside a preallocated scratch buffer. Endpoint reopening may resize that scratch
 rendering resumes; the active render callback never allocates, logs, performs file/network I/O,
 or holds the control mutex.
 
+`Stop()` preserves queued PCM until `AudioTransitionGuard` completes its fade-out, then performs
+one asynchronous ring reset. This avoids turning the final sample into a short DC tail while
+still preventing stopped audio from leaking into a subsequent start.
+
 `EndpointLatencyModel` reports software queue + current endpoint padding + measured engine
 latency (or period fallback) + signed calibration offset. This is operational telemetry, not a
 physical latency measurement. Use the loopback WAVE analyzer before declaring endpoint-specific

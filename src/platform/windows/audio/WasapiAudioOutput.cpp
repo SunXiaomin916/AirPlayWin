@@ -360,9 +360,7 @@ public:
 
     void Stop() noexcept {
         requested_playing_.store(false, std::memory_order_release);
-        if (ring_ != nullptr) {
-            ring_->Reset();
-        }
+        reset_ring_after_stop_.store(true, std::memory_order_release);
         if (guard_ != nullptr) {
             guard_->Request(AudioTransition::Stop);
         }
@@ -1125,6 +1123,12 @@ private:
 
         guard_->Process(output, writable_frames, format_.channel_count,
                         frames_read < writable_frames);
+        if (guard_->State() == AudioTransitionState::Stopped &&
+            reset_ring_after_stop_.exchange(false, std::memory_order_acq_rel)) {
+            // Stop fades queued PCM to zero first. Discard only after the guard reaches
+            // silence so the fade follows the real waveform instead of a frozen sample.
+            ring_->Reset();
+        }
         if (endpoint_sample_format == AudioEndpointSampleFormat::Pcm16) {
             auto* const pcm = reinterpret_cast<std::int16_t*>(raw_buffer);
             for (std::size_t index = 0U; index < sample_count; ++index) {
@@ -1255,6 +1259,7 @@ private:
     std::wstring current_device_id_;
     std::atomic<bool> opened_{false};
     std::atomic<bool> requested_playing_{false};
+    std::atomic<bool> reset_ring_after_stop_{false};
     std::atomic<std::uint64_t> current_epoch_{1U};
     std::atomic<std::uint32_t> current_buffer_depth_frames_{0U};
     std::atomic<std::uint64_t> output_latency_microseconds_{0U};

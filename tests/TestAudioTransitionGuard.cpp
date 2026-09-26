@@ -144,4 +144,25 @@ void TestAudioTransitionGuard() {
     priority_guard.Process(priority_samples, 20U, 2U, false);
     APW_EXPECT(priority_guard.State() == AudioTransitionState::Audible);
     APW_EXPECT(priority_guard.ClickPop().transient_events == 0U);
+
+    AudioTransitionGuard waveform_guard{AudioTransitionConfig{
+        .sample_rate = 1'000U,
+        .fade_in_milliseconds = 1.0F,
+        .fade_out_milliseconds = 4.0F,
+        .volume_ramp_milliseconds = 1.0F,
+        .prewarm_milliseconds = 1.0F,
+        .maximum_pcm_amplitude = 1.0F,
+        .dc_offset_threshold = 0.5F,
+    }};
+    waveform_guard.Request(AudioTransition::Start);
+    std::array<float, 4U> waveform_samples{0.25F, 0.25F, 0.25F, 0.25F};
+    waveform_guard.Process(waveform_samples, 2U, 2U, false);
+    APW_EXPECT(waveform_guard.State() == AudioTransitionState::Audible);
+
+    waveform_guard.Request(AudioTransition::Stop);
+    waveform_samples = {-0.25F, -0.25F, 0.25F, 0.25F};
+    waveform_guard.Process(waveform_samples, 2U, 2U, false);
+    APW_EXPECT(waveform_samples[0] < 0.0F);
+    APW_EXPECT(waveform_samples[2] > 0.0F);
+    APW_EXPECT(waveform_guard.State() == AudioTransitionState::FadingOut);
 }

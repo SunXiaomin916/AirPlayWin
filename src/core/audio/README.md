@@ -9,6 +9,10 @@ fade-in/out, sample-ramped volume, underrun-to-zero, zero fill, numeric sanitiza
 clamping, and baseline DC monitoring. Safety commands are priority-merged, and a start/resume
 arriving during fade-out is deferred until the old tail reaches zero.
 
+Stop and pause fades follow the still-queued PCM waveform so phase remains continuous down to
+silence. Timeline-breaking transitions (flush, seek, hard resync, and device switch) stay
+isolated from replacement PCM and use the captured safe tail instead.
+
 `ClickPopDetector` observes the guarded output immediately before platform buffer release. It
 uses fixed per-channel state and atomics only. The detector reports adjacent-sample threshold
 crossings and peak step sizes; it does not modify PCM and is not a replacement for physical
