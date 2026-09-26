@@ -1,6 +1,7 @@
-# AirPlayWin 1.0.0
+# AirPlayWin 1.0.1
 
-AirPlayWin 1.0.0 is the first supported Classic RAOP release for Windows 11 x64.
+AirPlayWin 1.0.1 is the supported Classic RAOP release for Windows 11 x64. This patch adds the
+official application icon to the executable, installed shortcuts, and release assets.
 
 ## Supported
 

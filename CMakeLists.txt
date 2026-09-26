@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 1.0.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 1.0.1 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -18,6 +18,11 @@ configure_file(
     cmake/AirPlayWinVersion.h.in
     "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.h"
     @ONLY
+)
+configure_file(
+    assets/branding/AirPlayWin.ico
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWin.ico"
+    COPYONLY
 )
 configure_file(
     cmake/AirPlayWinVersion.rc.in
@@ -121,6 +126,11 @@ endif()
 
 install(TARGETS AirPlayWin RUNTIME DESTINATION bin)
 install(FILES README.md RELEASE_NOTES.md SECURITY.md DESTINATION .)
+install(FILES
+    assets/branding/AirPlayWin-icon-1024.png
+    assets/branding/AirPlayWin.ico
+    DESTINATION assets
+)
 install(DIRECTORY installer/ DESTINATION installer)
 install(FILES docs/release.md DESTINATION docs)
 if(AIRPLAYWIN_PACKAGE_TESTS)

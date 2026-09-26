@@ -10,3 +10,5 @@ AirPlayWin-*-windows-x64.zip
 CMakeUserPresets.json
 *.user
 *.suo
+/assets/branding/*-source.png
+/assets/branding/*-preview.png

@@ -61,5 +61,5 @@ set_tests_properties(airplaywin_antipop_regression PROPERTIES LABELS "ci;anti-po
 set_tests_properties(airplaywin_latency_regression PROPERTIES LABELS "ci;latency")
 set_tests_properties(airplaywin_version PROPERTIES
     LABELS "ci;release"
-    PASS_REGULAR_EXPRESSION "AirPlayWin 1.0.0"
+    PASS_REGULAR_EXPRESSION "AirPlayWin ${PROJECT_VERSION}"
 )

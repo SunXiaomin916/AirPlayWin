@@ -63,6 +63,7 @@ $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $targetExe
 $shortcut.Arguments = "--serve --classic-raop --run-until-stopped"
 $shortcut.WorkingDirectory = $targetRoot
+$shortcut.IconLocation = "$targetExe,0"
 $shortcut.Description = "AirPlayWin audio receiver"
 $shortcut.Save()
 
@@ -71,6 +72,7 @@ $stopShortcut = $shell.CreateShortcut($stopShortcutPath)
 $stopShortcut.TargetPath = $targetExe
 $stopShortcut.Arguments = "--stop"
 $stopShortcut.WorkingDirectory = $targetRoot
+$stopShortcut.IconLocation = "$targetExe,0"
 $stopShortcut.Description = "Stop the running AirPlayWin receiver"
 $stopShortcut.Save()
 

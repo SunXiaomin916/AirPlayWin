@@ -109,7 +109,7 @@ if (-not $packagedReceiver) {
 }
 $requiredNames = @("README.md", "RELEASE_NOTES.md", "SECURITY.md", "Install-AirPlayWin.ps1",
                    "Start-AirPlayWin.ps1", "Uninstall-AirPlayWin.ps1",
-                   "release.md")
+                   "release.md", "AirPlayWin-icon-1024.png", "AirPlayWin.ico")
 foreach ($required in $requiredNames) {
     if (-not (Get-ChildItem -LiteralPath $verifyRoot -Recurse -File |
         Where-Object Name -eq $required | Select-Object -First 1)) {
