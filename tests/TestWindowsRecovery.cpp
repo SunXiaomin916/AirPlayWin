@@ -49,10 +49,14 @@ void TestWindowsRecovery() {
 
     const auto executable = WindowsFirewallManager::CurrentExecutablePath();
     APW_EXPECT(!executable.empty());
-    const auto specs = WindowsFirewallManager::CoreRuleSpecs(executable, 5'000U, 7'000U);
+    const auto specs =
+        WindowsFirewallManager::CoreRuleSpecs(executable, 5'000U, 7'000U, false);
     APW_EXPECT(specs.size() == 2U);
     APW_EXPECT(specs[0].IsValid() && specs[1].IsValid());
-    APW_EXPECT(specs[0].local_ports == L"5000,7000");
+    APW_EXPECT(specs[0].local_ports == L"5000");
+    const auto experimental_specs =
+        WindowsFirewallManager::CoreRuleSpecs(executable, 5'000U, 7'000U, true);
+    APW_EXPECT(experimental_specs[0].local_ports == L"5000,7000");
     const auto status = WindowsFirewallManager::Query(specs[0]);
     if (status.health == FirewallRuleHealth::Error) {
         APW_EXPECT(status.last_error != 0U);

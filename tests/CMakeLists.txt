@@ -55,6 +55,11 @@ add_test(NAME airplaywin_unit_tests COMMAND airplaywin_tests)
 add_test(NAME airplaywin_sync_regression COMMAND airplaywin_tests --only GroupSoakRegression)
 add_test(NAME airplaywin_antipop_regression COMMAND airplaywin_tests --only AntiPopStress)
 add_test(NAME airplaywin_latency_regression COMMAND airplaywin_tests --only LoopbackLatency)
+add_test(NAME airplaywin_version COMMAND AirPlayWin --version)
 set_tests_properties(airplaywin_sync_regression PROPERTIES LABELS "ci;sync;soak")
 set_tests_properties(airplaywin_antipop_regression PROPERTIES LABELS "ci;anti-pop")
 set_tests_properties(airplaywin_latency_regression PROPERTIES LABELS "ci;latency")
+set_tests_properties(airplaywin_version PROPERTIES
+    LABELS "ci;release"
+    PASS_REGULAR_EXPRESSION "AirPlayWin 1.0.0"
+)

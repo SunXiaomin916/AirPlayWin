@@ -113,5 +113,7 @@ continuous hours, dynamic join/leave/reconnect cycles, the 1,000-event hot-plug/
 and real 2/8/24-hour soaks across USB DAC, Realtek, HDMI, and relevant Bluetooth hardware. Retain
 the WAVE captures and JSON outputs with endpoint, driver, network, and calibration metadata.
 
-Pairing, encryption, Apple codec decoding, full bidirectional PTP delay measurement, inter-host
-group-control transport, and WinUI remain outside S12.
+At the S12 boundary, pairing, encryption, Apple codec decoding, full bidirectional PTP delay
+measurement, inter-host group-control transport, and WinUI were outside the sprint. Subsequent
+v1.0 productization added the narrow Classic RAOP RSA-AES and Apple Lossless path; modern
+pairing/FairPlay, full PTP, inter-host group control, and WinUI remain outside v1.0.

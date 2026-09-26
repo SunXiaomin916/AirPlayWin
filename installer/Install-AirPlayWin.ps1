@@ -45,6 +45,8 @@ New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $targetInstaller -Force | Out-Null
 Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot "README.md") -Destination $targetRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot "RELEASE_NOTES.md") -Destination $targetRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot "SECURITY.md") -Destination $targetRoot -Force
 Copy-Item -Path (Join-Path $sourceRoot "installer\*.ps1") -Destination $targetInstaller -Force
 
 if (-not $SkipFirewall) {
@@ -59,20 +61,31 @@ $shortcutPath = Join-Path $programs "AirPlayWin.lnk"
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $targetExe
-$shortcut.Arguments = "--serve --run-until-stopped"
+$shortcut.Arguments = "--serve --classic-raop --run-until-stopped"
 $shortcut.WorkingDirectory = $targetRoot
 $shortcut.Description = "AirPlayWin audio receiver"
 $shortcut.Save()
 
+$stopShortcutPath = Join-Path $programs "Stop AirPlayWin.lnk"
+$stopShortcut = $shell.CreateShortcut($stopShortcutPath)
+$stopShortcut.TargetPath = $targetExe
+$stopShortcut.Arguments = "--stop"
+$stopShortcut.WorkingDirectory = $targetRoot
+$stopShortcut.Description = "Stop the running AirPlayWin receiver"
+$stopShortcut.Save()
+
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 if ($EnableStartup) {
-    New-ItemProperty -Path $runKey -Name "AirPlayWin" -Value ('"{0}" --serve --run-until-stopped' -f $targetExe) -PropertyType String -Force | Out-Null
+    $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $startupScript = Join-Path $targetInstaller "Start-AirPlayWin.ps1"
+    $startupCommand = ('"{0}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{1}" -Hidden' -f $windowsPowerShell, $startupScript)
+    New-ItemProperty -Path $runKey -Name "AirPlayWin" -Value $startupCommand -PropertyType String -Force | Out-Null
 } else {
     Remove-ItemProperty -Path $runKey -Name "AirPlayWin" -ErrorAction SilentlyContinue
 }
 
 Write-Output "AirPlayWin installed to '$targetRoot'."
-Write-Output "Start Menu shortcut created. Startup enabled: $([bool]$EnableStartup)."
+Write-Output "Start/stop shortcuts created. Startup enabled: $([bool]$EnableStartup)."
 if ($SkipFirewall) {
     Write-Warning "Firewall rules were skipped. Remote discovery/control may be blocked."
 }

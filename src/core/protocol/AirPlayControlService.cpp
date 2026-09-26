@@ -724,7 +724,8 @@ std::vector<std::byte> AirPlayControlService::StatusResponse(
                                                .close_connection = close,
                                                .server_name = raop_crypto_ != nullptr
                                                                   ? "AirTunes/105.1"
-                                                                  : "AirPlayWin/0.12.0"});
+                                                                  : "AirPlayWin/"
+                                                                        AIRPLAYWIN_VERSION_STRING});
 }
 
 }  // namespace airplaywin::protocol

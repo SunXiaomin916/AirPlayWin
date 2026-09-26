@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.12.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 1.0.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -10,6 +10,20 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 
 option(AIRPLAYWIN_BUILD_TESTS "Build AirPlayWin unit tests" ON)
+option(AIRPLAYWIN_PACKAGE_TESTS "Include regression binaries and tools in the release package" OFF)
+
+set(AIRPLAYWIN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${AIRPLAYWIN_GENERATED_DIR}")
+configure_file(
+    cmake/AirPlayWinVersion.h.in
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.h"
+    @ONLY
+)
+configure_file(
+    cmake/AirPlayWinVersion.rc.in
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.rc"
+    @ONLY
+)
 
 add_library(airplaywin_core STATIC
     src/core/audio/AudioEngine.cpp
@@ -50,7 +64,10 @@ add_library(airplaywin_core STATIC
     src/core/transport/RtpPacket.cpp
 )
 
-target_include_directories(airplaywin_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(airplaywin_core PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${AIRPLAYWIN_GENERATED_DIR}"
+)
 target_compile_features(airplaywin_core PUBLIC cxx_std_23)
 airplaywin_set_warnings(airplaywin_core)
 
@@ -87,6 +104,7 @@ airplaywin_set_warnings(airplaywin_windows)
 add_executable(AirPlayWin
     src/app/main.cpp
     src/app/WaveFileReader.cpp
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.rc"
 )
 target_compile_features(AirPlayWin PRIVATE cxx_std_23)
 target_compile_definitions(AirPlayWin PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -96,26 +114,33 @@ airplaywin_set_warnings(AirPlayWin)
 if(AIRPLAYWIN_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
-    install(TARGETS airplaywin_tests RUNTIME DESTINATION tools)
+    if(AIRPLAYWIN_PACKAGE_TESTS)
+        install(TARGETS airplaywin_tests RUNTIME DESTINATION tools)
+    endif()
 endif()
 
 install(TARGETS AirPlayWin RUNTIME DESTINATION bin)
-install(FILES README.md DESTINATION .)
+install(FILES README.md RELEASE_NOTES.md SECURITY.md DESTINATION .)
 install(DIRECTORY installer/ DESTINATION installer)
-install(FILES
-    tools/Run-S12Regression.ps1
-    DESTINATION tools
-)
-install(FILES
-    tools/packet_replay/rtp_l16_replay.ps1
-    tools/packet_replay/README.md
-    DESTINATION tools/packet_replay
-)
-install(FILES docs/phase-12.md DESTINATION docs)
+install(FILES docs/release.md DESTINATION docs)
+if(AIRPLAYWIN_PACKAGE_TESTS)
+    install(FILES
+        tools/Run-S12Regression.ps1
+        DESTINATION tools
+    )
+    install(FILES
+        tools/packet_replay/rtp_l16_replay.ps1
+        tools/packet_replay/README.md
+        DESTINATION tools/packet_replay
+    )
+    install(FILES docs/phase-12.md DESTINATION docs)
+endif()
 
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_NAME "AirPlayWin")
 set(CPACK_PACKAGE_VENDOR "AirPlayWin")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_FILE_NAME "AirPlayWin-${PROJECT_VERSION}-windows-x64")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Windows-native classic AirPlay/RAOP audio receiver")
+set(CPACK_PACKAGE_CHECKSUM "SHA256")
 include(CPack)

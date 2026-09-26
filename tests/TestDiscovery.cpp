@@ -34,6 +34,11 @@ using airplaywin::discovery::TxtProperty;
 }  // namespace
 
 void TestDiscovery() {
+    const DiscoveryConfig release_defaults{};
+    APW_EXPECT(release_defaults.advertise_raop);
+    APW_EXPECT(!release_defaults.advertise_airplay);
+    APW_EXPECT(release_defaults.classic_raop);
+
     DeviceId parsed{};
     APW_EXPECT(airplaywin::discovery::ParseDeviceId(L"02:11:22:AA:BB:CC", parsed));
     APW_EXPECT(parsed == (DeviceId{0x02U, 0x11U, 0x22U, 0xAAU, 0xBBU, 0xCCU}));

@@ -45,7 +45,8 @@ public:
     [[nodiscard]] static std::vector<FirewallRuleSpec> CoreRuleSpecs(
         const std::wstring& executable_path,
         std::uint16_t raop_port,
-        std::uint16_t airplay_port);
+        std::uint16_t airplay_port,
+        bool include_experimental_airplay);
     [[nodiscard]] static FirewallRuleStatus Query(const FirewallRuleSpec& spec) noexcept;
     [[nodiscard]] static bool Install(const FirewallRuleSpec& spec,
                                       std::uint32_t& error) noexcept;

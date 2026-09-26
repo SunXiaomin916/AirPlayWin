@@ -1,20 +1,16 @@
-# AirPlayWin
+# AirPlayWin 1.0
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 12
-provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
-control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
-timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
-buffered RTP-to-QPC timing experiment. Phase 8 formalizes the bottom anti-pop path with an
-automatic waveform-discontinuity detector and 1,000-cycle regression harness. Phase 9 adds
-opt-in low-latency WASAPI paths, adaptive RTP buffering, and a capture-based latency analyzer.
-Phase 10 adds an experimental receive-only PTPv2/QPC clock domain, drift servo, holdover/relock,
-bounded sample-rate correction, and guarded hard resynchronization. Phase 11 adds an absolute
-RTP/PTP presentation phase, a 2–4 member group coordinator, safe muted joins, independent
-leave/drop, master-change holdover, and persistent per-endpoint offsets. Pairing, Apple codec
-decoding, encryption, complete bidirectional PTP delay measurement, an inter-host group-control
-protocol, and WinUI are not implemented yet. Phase 12 adds offline group-skew analysis,
-deterministic network fault injection, accelerated clock-soak coverage, and a real wall-clock
-regression runner without claiming unperformed physical multi-speaker measurements.
+AirPlayWin is a Windows 11 x64 Classic AirPlay/RAOP audio receiver. iPhone, iPad, and Mac senders
+can discover the computer as a speaker and play Apple Lossless or L16 audio through the default
+Windows output or a selected endpoint. The supported v1.0 profile includes legacy RSA-AES,
+Windows Media Foundation ALAC decoding, event-driven WASAPI, anti-pop transitions, device
+recovery, and synchronization of sender volume with the `AirPlayWin.exe` Windows mixer session.
+
+The architecture also contains experimental buffered timing, receive-only PTP, group
+coordination, skew analysis, and regression tools developed through phases 1–12. Those
+experiments do not make v1.0 a complete AirPlay 2 implementation. Pairing/FairPlay, modern
+buffered sessions, inter-host multi-room control, video, and WinUI remain outside the release.
+Read [SECURITY.md](SECURITY.md) before running the open local-network receiver.
 
 ## Phase 1 capabilities
 
@@ -329,14 +325,15 @@ ctest --preset debug
 Warnings are compiled as errors (`/W4 /WX`). No third-party packages are required in the
 current phases.
 
-Create the phase 9 x64 beta ZIP after the Release build:
+Create and verify the v1.0 x64 release ZIP from a clean checkout:
 
 ```powershell
-cpack --config .\build\vs2022-x64\CPackConfig.cmake -C Release
+.\tools\New-ReleasePackage.ps1
 ```
 
 See [installer/README.md](installer/README.md) for the per-user install, startup, firewall, and
-uninstall workflow. The beta package is unsigned.
+uninstall workflow. The release script supports an optional production Authenticode certificate;
+unsigned local builds must be verified with the adjacent SHA-256 digest.
 
 ## Audio probe
 
@@ -405,34 +402,36 @@ List eligible IPv4 multicast interfaces:
 .\build\vs2022-x64\Debug\AirPlayWin.exe --list-network-interfaces
 ```
 
-Advertise both AirPlay service types for five minutes:
+Advertise the supported Classic RAOP service for five minutes:
 
 ```powershell
 .\build\vs2022-x64\Debug\AirPlayWin.exe --discover --name "Living Room PC" --duration 300
 ```
 
-Use `--device-id AA:BB:CC:DD:EE:FF` to override the stable development identity, or
+Use `--device-id AA:BB:CC:DD:EE:FF` to override the stable receiver identity, or
 `--include-virtual-interfaces` when explicitly testing a VM/VPN adapter. The probe only
-advertises without opening control ports. Use the phase 4 receiver probe below for control and
-development-media connections.
+advertises without opening control ports. Use the receiver command below for actual playback.
 
-## Control and RTP/L16 development receiver
+The unsupported dual-service advertisement is retained only for protocol development and must be
+enabled explicitly with `--experimental-airplay2`.
 
-Publish both services and listen on the matching RAOP/AirPlay TCP ports for five minutes:
+## Classic RAOP receiver
+
+Run the supported receiver for five minutes:
 
 ```powershell
 .\build\vs2022-x64\Debug\AirPlayWin.exe --serve --name "Living Room PC" --duration 300
 ```
 
-For compatibility testing with a sender that otherwise selects an unsupported AirPlay 2
-media path, publish only the implemented classic RAOP realtime-audio profile:
+Classic RAOP is the default. `--classic-raop` remains accepted for explicit scripts and older
+installations. To expose the unfinished dual-service protocol test path, opt in deliberately:
 
 ```powershell
-.\build\vs2022-x64\Debug\AirPlayWin.exe --serve --classic-raop `
-    --name "Living Room PC Classic" --duration 300
+.\build\vs2022-x64\Debug\AirPlayWin.exe --serve --experimental-airplay2 `
+    --name "AirPlayWin Experimental" --duration 300
 ```
 
-This mode suppresses the `_airplay._tcp` record and advertises PCM/Apple Lossless
+The default mode suppresses the `_airplay._tcp` record and advertises PCM/Apple Lossless
 (`cn=0,1`) with legacy RSA-AES (`et=0,1`). Encrypted ALAC packets are decrypted with CNG,
 decoded by the Windows Media Foundation ALAC transform, and passed through the existing
 epoch/transition-guarded WASAPI path. It remains a classic realtime RAOP receiver; FairPlay,
@@ -442,7 +441,8 @@ After an L16 or Apple Lossless SDP `ANNOUNCE` and UDP `SETUP`, the process accep
 negotiated `server_port`, decodes on a separate stream worker, and submits float32 frames to WASAPI. Add
 `--device "{endpoint-id}"` to select a fixed output endpoint; otherwise the sink follows the
 default endpoint. The process prints control, RTP, jitter-buffer, decoder, and WASAPI metrics.
-`--raop-port` and `--airplay-port` override the control ports.
+`--raop-port` overrides the supported control port. `--airplay-port` is used only by the explicit
+experimental dual-service mode.
 
 Enable the S7 local buffered-timing experiment with a 120 ms presentation reserve:
 
@@ -513,8 +513,10 @@ An Administrator can explicitly create or remove those rules with
 `--install-firewall-rules` and `--remove-firewall-rules`. Normal `--serve` startup does not
 change firewall configuration.
 
-For an installed long-running receiver use `--serve --run-until-stopped`; press Ctrl+C for an
-ordered service/audio shutdown. A second receiver instance exits before attempting to bind.
+For an installed long-running receiver use `--serve --run-until-stopped`; add
+`--log-file <path>` for an append-only UTF-8 diagnostics log that can be inspected while the
+receiver is running. Press Ctrl+C or run a second instance with `--stop` for an ordered
+service/audio shutdown. A second receiver instance exits before attempting to bind.
 
 ## Verified on the development machine
 

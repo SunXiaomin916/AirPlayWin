@@ -103,12 +103,16 @@ std::wstring WindowsFirewallManager::CurrentExecutablePath() {
 std::vector<FirewallRuleSpec> WindowsFirewallManager::CoreRuleSpecs(
     const std::wstring& executable_path,
     const std::uint16_t raop_port,
-    const std::uint16_t airplay_port) {
-    const auto tcp_ports =
-        std::to_wstring(raop_port) + L"," + std::to_wstring(airplay_port);
+    const std::uint16_t airplay_port,
+    const bool include_experimental_airplay) {
+    const auto tcp_ports = include_experimental_airplay
+                               ? std::to_wstring(raop_port) + L"," +
+                                     std::to_wstring(airplay_port)
+                               : std::to_wstring(raop_port);
     return {
         FirewallRuleSpec{.name = L"AirPlayWin Core TCP",
-                         .description = L"AirPlayWin RTSP/HTTP control listeners (Private only)",
+                         .description =
+                             L"AirPlayWin RAOP control listener (Private only)",
                          .executable_path = executable_path,
                          .protocol = FirewallProtocol::Tcp,
                          .local_ports = tcp_ports},

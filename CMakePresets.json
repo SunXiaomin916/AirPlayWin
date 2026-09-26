@@ -48,7 +48,7 @@
     },
     {
       "name": "ci-regression",
-      "displayName": "Phase 12 synchronization, anti-pop, and latency regressions",
+      "displayName": "AirPlayWin release synchronization, anti-pop, latency, and version gates",
       "configurePreset": "vs2022-x64",
       "configuration": "Release",
       "filter": {

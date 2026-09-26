@@ -73,8 +73,9 @@ The core output boundary remains the final stale-epoch guard.
   the range -144 dB through 0 dB. Other parameter lines do not hide the volume field.
 - GET_PARAMETER with an empty body remains a keep-alive. A `volume` query returns the stored
   session value as `text/parameters`.
-- Linear gain remains applied by the bottom transition guard's sample ramp, never directly by
-  protocol code.
+- Protocol code still forwards only linear gain through the audio abstraction. In v1.0 Shared
+  mode, the Windows backend applies it to `ISimpleAudioVolume` so the per-app mixer follows the
+  sender; Exclusive/unavailable-session output falls back to the bottom guard's sample ramp.
 
 The RECORD latency and four-byte retransmitted-audio wrapper behavior are informed by the
 [open-source Shairport Sync](https://github.com/mikebrady/shairport-sync) classic AirPlay

@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 
+#include "AirPlayWinVersion.h"
+
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -94,6 +96,8 @@ void TestAirPlayControlService() {
     const auto options_text = Text(options_reply.writes.front());
     APW_EXPECT(options_text.find("RTSP/1.0 200 OK") != std::string::npos);
     APW_EXPECT(options_text.find("CSeq: 1") != std::string::npos);
+    APW_EXPECT(options_text.find("Server: AirPlayWin/" AIRPLAYWIN_VERSION_STRING) !=
+               std::string::npos);
     APW_EXPECT(options_text.find("Public: ANNOUNCE") != std::string::npos);
 
     const auto announce = ReadFixture("announce_request.txt");

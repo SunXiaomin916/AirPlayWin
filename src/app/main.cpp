@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <share.h>
 
 #include <algorithm>
 #include <atomic>
@@ -23,6 +24,7 @@
 #include <thread>
 #include <vector>
 
+#include "AirPlayWinVersion.h"
 #include "core/audio/LoopbackLatencyAnalyzer.h"
 #include "core/audio/TestSignalGenerator.h"
 #include "core/crypto/OpenSessionAuthenticator.h"
@@ -216,8 +218,33 @@ private:
     bool installed_{false};
 };
 
+class ReceiverStopEvent final {
+public:
+    ReceiverStopEvent() noexcept
+        : event_(CreateEventW(nullptr, TRUE, FALSE, L"Local\\AirPlayWin.Stop")) {}
+
+    ~ReceiverStopEvent() {
+        if (event_ != nullptr) {
+            CloseHandle(event_);
+        }
+    }
+
+    ReceiverStopEvent(const ReceiverStopEvent&) = delete;
+    ReceiverStopEvent& operator=(const ReceiverStopEvent&) = delete;
+
+    [[nodiscard]] bool Available() const noexcept { return event_ != nullptr; }
+    [[nodiscard]] bool Requested() const noexcept {
+        return event_ != nullptr && WaitForSingleObject(event_, 0U) == WAIT_OBJECT_0;
+    }
+
+private:
+    HANDLE event_{nullptr};
+};
+
 struct CommandLine final {
     bool show_help{false};
+    bool show_version{false};
+    bool stop_receiver{false};
     bool list_devices{false};
     bool list_network_interfaces{false};
     bool play{false};
@@ -242,6 +269,7 @@ struct CommandLine final {
     std::string ptp_interface_address{"0.0.0.0"};
     std::filesystem::path loopback_capture_path{};
     std::filesystem::path group_sync_capture_path{};
+    std::filesystem::path log_file_path{};
     std::uint32_t loopback_reference_channel{0U};
     std::uint32_t loopback_output_channel{1U};
     bool loopback_reference_channel_set{false};
@@ -262,7 +290,7 @@ struct CommandLine final {
     airplaywin::discovery::DeviceId discovery_device_id{};
     std::uint16_t raop_port{5'000U};
     std::uint16_t airplay_port{7'000U};
-    bool classic_raop{false};
+    bool classic_raop{true};
     bool include_virtual_interfaces{false};
     TestSignal signal{TestSignal::Sine440Hz};
     std::uint32_t sample_rate{48'000U};
@@ -273,8 +301,10 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-12 synchronization regression tools\n\n"
+        << L"AirPlayWin " AIRPLAYWIN_VERSION_STRING_W L" Classic RAOP receiver\n\n"
         << L"  AirPlayWin --help\n"
+        << L"  AirPlayWin --version\n"
+        << L"  AirPlayWin --stop\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
         << L"  AirPlayWin --play [--device <endpoint-id>]\n"
@@ -286,7 +316,7 @@ void PrintUsage() {
         << L"             [--diagnostics-interval <seconds>]\n\n"
         << L"  AirPlayWin --discover [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
-        << L"             [--classic-raop]\n"
+        << L"             [--experimental-airplay2]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --serve [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--device <endpoint-id>]\n"
@@ -294,9 +324,10 @@ void PrintUsage() {
         << L"             [--endpoint-offset-us <-1000000..1000000>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
+        << L"             [--log-file <path>]\n"
         << L"             [--experimental-buffered-timing [--buffered-timing-ms <20..2000>]]\n"
         << L"             [--experimental-ptp-timing [--ptp-interface <IPv4>]]\n"
-        << L"             [--classic-raop]\n"
+        << L"             [--experimental-airplay2]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --analyze-loopback <capture.wav>\n"
         << L"             [--reference-channel <index> --output-channel <index>]\n"
@@ -441,6 +472,10 @@ void PrintUsage() {
         const std::wstring argument{argv[index]};
         if (argument == L"--help" || argument == L"-h") {
             command.show_help = true;
+        } else if (argument == L"--version") {
+            command.show_version = true;
+        } else if (argument == L"--stop") {
+            command.stop_receiver = true;
         } else if (argument == L"--list-devices") {
             command.list_devices = true;
         } else if (argument == L"--list-network-interfaces") {
@@ -461,6 +496,11 @@ void PrintUsage() {
             command.lifecycle_smoke = true;
         } else if (argument == L"--run-until-stopped") {
             command.run_until_stopped = true;
+        } else if (argument == L"--log-file" && index + 1 < argc) {
+            command.log_file_path = argv[++index];
+            if (command.log_file_path.empty()) {
+                return false;
+            }
         } else if (argument == L"--experimental-buffered-timing") {
             command.experimental_buffered_timing = true;
         } else if (argument == L"--experimental-ptp-timing") {
@@ -589,6 +629,8 @@ void PrintUsage() {
             }
         } else if (argument == L"--classic-raop") {
             command.classic_raop = true;
+        } else if (argument == L"--experimental-airplay2") {
+            command.classic_raop = false;
         } else if (argument == L"--include-virtual-interfaces") {
             command.include_virtual_interfaces = true;
         } else if (argument == L"--signal" && index + 1 < argc) {
@@ -627,8 +669,12 @@ void PrintUsage() {
         static_cast<unsigned>(command.clear_endpoint_calibration);
     const auto analysis_commands = static_cast<unsigned>(command.analyze_loopback) +
                                    static_cast<unsigned>(command.analyze_group_sync);
+    if ((command.show_version || command.stop_receiver) && argc != 2) {
+        return false;
+    }
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
         (command.run_until_stopped && !command.serve) ||
+        (!command.log_file_path.empty() && !command.serve) ||
         (command.experimental_buffered_timing && !command.serve) ||
         (command.experimental_ptp_timing && !command.serve) ||
         (command.experimental_buffered_timing && command.experimental_ptp_timing) ||
@@ -677,6 +723,32 @@ void PrintUsage() {
         !command.loopback_output_channel_set) {
         command.loopback_output_channel = 0U;
     }
+    return true;
+}
+
+[[nodiscard]] bool RedirectDiagnosticsToFile(
+    const std::filesystem::path& path) noexcept {
+    if (path.empty()) {
+        return true;
+    }
+
+    FILE* output = nullptr;
+    output = _wfsopen(path.c_str(), L"a, ccs=UTF-8", _SH_DENYNO);
+    if (output == nullptr) {
+        return false;
+    }
+    const auto output_descriptor = _fileno(output);
+    if (_dup2(output_descriptor, _fileno(stdout)) != 0 ||
+        _dup2(output_descriptor, _fileno(stderr)) != 0 ||
+        _setmode(_fileno(stdout), _O_U8TEXT) == -1 ||
+        _setmode(_fileno(stderr), _O_U8TEXT) == -1) {
+        static_cast<void>(std::fclose(output));
+        return false;
+    }
+    static_cast<void>(std::fclose(output));
+
+    std::wcout.clear();
+    std::wcerr.clear();
     return true;
 }
 
@@ -759,7 +831,8 @@ void LoadPersistedEndpointCalibration(CommandLine& command) {
         return 20;
     }
     const auto rules = WindowsFirewallManager::CoreRuleSpecs(
-        executable, command.raop_port, command.airplay_port);
+        executable, command.raop_port, command.airplay_port,
+        !command.classic_raop);
     bool succeeded = true;
     if (command.remove_firewall_rules) {
         for (const auto& rule : rules) {
@@ -1517,7 +1590,7 @@ void PrintRecoveryDiagnostics(
 }
 
 [[nodiscard]] int RunControlServer(const CommandLine& command) {
-    if (command.raop_port == command.airplay_port) {
+    if (!command.classic_raop && command.raop_port == command.airplay_port) {
         std::wcerr << L"RAOP and AirPlay control ports must be different.\n";
         return 15;
     }
@@ -1583,7 +1656,9 @@ void PrintRecoveryDiagnostics(
     WindowsDiscoveryService discovery;
     auto stop_services = [&]() noexcept {
         discovery.Stop();
-        airplay_server.Stop();
+        if (!command.classic_raop) {
+            airplay_server.Stop();
+        }
         raop_server.Stop();
         if (ptp_service) {
             ptp_service->Stop();
@@ -1601,7 +1676,8 @@ void PrintRecoveryDiagnostics(
             }
             return 16;
         }
-        if (!airplay_server.Start(
+        if (!command.classic_raop &&
+            !airplay_server.Start(
                 {.bind_address = "0.0.0.0", .port = command.airplay_port})) {
             raop_server.Stop();
             if (ptp_service) {
@@ -1610,7 +1686,9 @@ void PrintRecoveryDiagnostics(
             return 17;
         }
         if (!discovery.Start(discovery_config)) {
-            airplay_server.Stop();
+            if (!command.classic_raop) {
+                airplay_server.Stop();
+            }
             raop_server.Stop();
             if (ptp_service) {
                 ptp_service->Stop();
@@ -1621,7 +1699,9 @@ void PrintRecoveryDiagnostics(
     };
     auto runtime_error = [&]() noexcept {
         const auto discovery_error = discovery.Diagnostics().last_error;
-        const auto airplay_error = airplay_server.Diagnostics().last_error;
+        const auto airplay_error = command.classic_raop
+                                       ? 0U
+                                       : airplay_server.Diagnostics().last_error;
         const auto raop_error = raop_server.Diagnostics().last_error;
         const auto ptp_error = ptp_service ? ptp_service->Diagnostics().last_error : 0U;
         return ptp_error != 0U
@@ -1646,13 +1726,22 @@ void PrintRecoveryDiagnostics(
     }
     airplaywin::lifecycle::RecoveryCoordinator recovery;
     ScopedConsoleControlHandler console_control;
+    ReceiverStopEvent stop_event;
+    if (!stop_event.Available()) {
+        std::wcerr << L"Unable to create the receiver stop signal.\n";
+        stop_services();
+        return 27;
+    }
     bool services_running = true;
     auto next_recovery_attempt = std::chrono::steady_clock::time_point{};
 
-    std::wcout << L"Control receiver ready: RAOP TCP " << command.raop_port
-               << L", AirPlay TCP " << command.airplay_port
-               << L". Authentication is open; unencrypted RTP/L16 development transport is "
-                  L"enabled. Buffered timing experiment: "
+    std::wcout << L"AirPlayWin " AIRPLAYWIN_VERSION_STRING_W
+               << L" receiver ready: RAOP TCP " << command.raop_port;
+    if (!command.classic_raop) {
+        std::wcout << L", experimental AirPlay TCP " << command.airplay_port;
+    }
+    std::wcout << L". Authentication is open; use only on a trusted Private network. "
+                  L"Buffered timing experiment: "
                << (command.experimental_buffered_timing ? L"on" : L"off")
                << (command.experimental_buffered_timing
                        ? L" (local RTP-to-QPC anchor only; no PTP).\n"
@@ -1677,7 +1766,8 @@ void PrintRecoveryDiagnostics(
     bool lifecycle_smoke_suspended = false;
     bool lifecycle_smoke_resumed = false;
     while (std::chrono::steady_clock::now() < deadline &&
-           !ShutdownRequestedFlag().load(std::memory_order_acquire)) {
+           !ShutdownRequestedFlag().load(std::memory_order_acquire) &&
+           !stop_event.Requested()) {
         const auto now = std::chrono::steady_clock::now();
         if (!lifecycle_smoke_suspended && now >= lifecycle_suspend_at) {
             power_monitor.RecordPowerBroadcast(PBT_APMSUSPEND);
@@ -1752,13 +1842,44 @@ int wmain(const int argc, wchar_t* argv[]) {
     static_cast<void>(SetConsoleOutputCP(CP_UTF8));
     static_cast<void>(_setmode(_fileno(stdout), _O_U8TEXT));
     static_cast<void>(_setmode(_fileno(stderr), _O_U8TEXT));
+    std::wcout << std::unitbuf;
+    std::wcerr << std::unitbuf;
     CommandLine command;
     if (!ParseCommandLine(argc, argv, command)) {
         PrintUsage();
         return 1;
     }
+    if (!RedirectDiagnosticsToFile(command.log_file_path)) {
+        std::wcerr << L"Unable to open the diagnostics log file.\n";
+        return 28;
+    }
     if (command.show_help) {
         PrintUsage();
+        return 0;
+    }
+    if (command.show_version) {
+        std::wcout << L"AirPlayWin " AIRPLAYWIN_VERSION_STRING_W L"\n";
+        return 0;
+    }
+    if (command.stop_receiver) {
+        const auto event = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\AirPlayWin.Stop");
+        if (event == nullptr) {
+            if (GetLastError() == ERROR_FILE_NOT_FOUND) {
+                std::wcout << L"No running AirPlayWin receiver was found.\n";
+                return 0;
+            }
+            std::wcerr << L"Unable to open the receiver stop signal; error="
+                       << GetLastError() << L".\n";
+            return 27;
+        }
+        const auto signaled = SetEvent(event) != FALSE;
+        const auto error = signaled ? ERROR_SUCCESS : GetLastError();
+        CloseHandle(event);
+        if (!signaled) {
+            std::wcerr << L"Unable to signal the running receiver; error=" << error << L".\n";
+            return 27;
+        }
+        std::wcout << L"Receiver stop requested.\n";
         return 0;
     }
     const bool calibration_command = command.save_endpoint_calibration ||
