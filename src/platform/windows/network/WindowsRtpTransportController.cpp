@@ -67,9 +67,13 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
                     .remote_clock_rate = request.format.sample_rate,
                     .target_buffer_milliseconds =
                         options_.buffered_timing_milliseconds,
+                    .endpoint_latency_offset_microseconds =
+                        options_.endpoint_latency_offset_microseconds,
+                    .require_phase_anchor = options_.group_phase_timeline != nullptr,
                 },
                 options_.ptp_clock_domain,
-                std::make_unique<airplaywin::windows::timing::QpcClockSource>());
+                std::make_unique<airplaywin::windows::timing::QpcClockSource>(),
+                options_.group_phase_timeline);
     } else if (options_.enable_buffered_timing) {
         timing_engine = std::make_unique<airplaywin::timing::BufferedRtpTimingEngine>(
             airplaywin::timing::BufferedRtpTimingConfig{

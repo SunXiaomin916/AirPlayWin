@@ -47,6 +47,20 @@ private:
     std::atomic<bool> hard_resync_{true};
 };
 
+class MissingPhaseTimingEngine final : public airplaywin::timing::ITimingEngine {
+public:
+    void Reset(std::optional<std::uint64_t>) noexcept override {}
+    [[nodiscard]] std::optional<std::int64_t> RemoteToLocalQpc(
+        std::uint64_t) noexcept override {
+        return std::nullopt;
+    }
+    [[nodiscard]] airplaywin::timing::TimingDiagnostics Diagnostics()
+        const noexcept override {
+        return {.enabled = true, .phase_mapping_failures = 1U};
+    }
+    [[nodiscard]] bool RequiresMappedTarget() const noexcept override { return true; }
+};
+
 [[nodiscard]] bool WaitForFrames(const airplaywin::tests::FakeAudioFrameSink& sink,
                                  const std::uint64_t frames) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
@@ -211,4 +225,34 @@ void TestRtpAudioStream() {
     APW_EXPECT(disciplined.timing_hard_resync_requests == 1U);
     APW_EXPECT(disciplined_sink.HardResyncCount() == 1U);
     disciplined_stream.Stop();
+
+    FakeAudioFrameSink missing_phase_sink;
+    RtpAudioStream missing_phase_stream{
+        RtpAudioStreamConfig{
+            .connection_id = 44U,
+            .format = {.sample_rate = 8'000U,
+                       .channel_count = 1U,
+                       .payload_type = 96U,
+                       .nominal_frames_per_packet = 1U},
+            .jitter_buffer = {.capacity_packets = 8U,
+                              .target_packets = 1U,
+                              .clock_rate = 8'000U},
+        },
+        std::make_unique<airplaywin::audio::PcmL16Decoder>(), missing_phase_sink,
+        std::make_unique<MissingPhaseTimingEngine>()};
+    APW_EXPECT(missing_phase_stream.Start());
+    APW_EXPECT(missing_phase_stream.Record(
+        {.sequence_number = static_cast<std::uint16_t>(1U), .rtp_timestamp = 5'000U}));
+    const std::array<std::byte, 2U> mono_sample{std::byte{0x40U}, std::byte{0x00U}};
+    missing_phase_stream.OnDatagram(BuildRtpPacket(1U, 5'000U, mono_sample), source,
+                                    3'000'000'000LL);
+    const auto missing_phase_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (missing_phase_stream.Diagnostics().timing_unmapped_dropped_frames == 0U &&
+           std::chrono::steady_clock::now() < missing_phase_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    APW_EXPECT(missing_phase_stream.Diagnostics().timing_unmapped_dropped_frames == 1U);
+    APW_EXPECT(missing_phase_sink.SubmittedFrames() == 0U);
+    missing_phase_stream.Stop();
 }

@@ -38,4 +38,7 @@ The stream consumes its bounded rate correction through a preallocated `DriftRes
 inserted/dropped correction frames, and converts a pending clock discontinuity into
 `IAudioFrameSink::HardResync`. The Windows sink then creates a new audio epoch and uses the
 mandatory hard-resync fade sequence. The transport never calls WASAPI directly. Absolute
-RTP-to-PTP phase alignment and multi-receiver group coordination remain outside this phase.
+Phase 11 can additionally supply `RtpPtpPhaseTimeline`. In that mode an RTP frame must map
+through the shared remote PTP phase and clock domain; an unavailable or master-mismatched phase
+increments `timing_unmapped_dropped_frames` and the PCM is discarded. There is no fallback to a
+receiver-local anchor. Multi-member policy remains in `GroupCoordinator`, outside transport.

@@ -260,6 +260,8 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .drift_dropped_frames = drift_dropped_frames_.load(std::memory_order_relaxed),
         .timing_hard_resync_requests =
             timing_hard_resync_requests_.load(std::memory_order_relaxed),
+        .timing_unmapped_dropped_frames =
+            timing_unmapped_dropped_frames_.load(std::memory_order_relaxed),
         .packet_processing_average_microseconds = packet_average,
         .packet_processing_maximum_microseconds =
             packet_processing_maximum_microseconds_.load(std::memory_order_relaxed),
@@ -455,6 +457,12 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
         const auto target_qpc = timing_engine_
                                     ? timing_engine_->RemoteToLocalQpc(rtp_timestamp)
                                     : std::optional<std::int64_t>{};
+        if (timing_engine_ && timing_engine_->RequiresMappedTarget() &&
+            !target_qpc.has_value()) {
+            timing_unmapped_dropped_frames_.fetch_add(submitted_frames,
+                                                      std::memory_order_relaxed);
+            continue;
+        }
         const audio::DecodedAudioFrameView decoded{
             .interleaved_samples = submitted_samples,
             .frame_count = submitted_frames,

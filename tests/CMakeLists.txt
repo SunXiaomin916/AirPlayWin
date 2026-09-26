@@ -11,6 +11,10 @@ add_executable(airplaywin_tests
     TestClickPopDetector.cpp
     TestClockServo.cpp
     TestEndpointLatencyModel.cpp
+    TestEndpointCalibrationStore.cpp
+    TestGroupCoordinator.cpp
+    TestGroupMemberAudioGate.cpp
+    TestGroupTimeline.cpp
     TestLoopbackLatency.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
@@ -29,6 +33,7 @@ add_executable(airplaywin_tests
     TestSessionManager.cpp
     TestSignalGenerator.cpp
     TestWindowsDiscovery.cpp
+    TestWindowsEndpointCalibrationStore.cpp
     TestWindowsAudioStreamIntegration.cpp
     TestWindowsPlatform.cpp
     TestWindowsPtpTimingService.cpp

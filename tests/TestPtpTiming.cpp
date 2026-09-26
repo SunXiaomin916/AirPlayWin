@@ -12,6 +12,7 @@
 #include "core/timing/IMonotonicClock.h"
 #include "core/timing/PtpClockDomain.h"
 #include "core/timing/PtpPacket.h"
+#include "core/timing/RtpPtpPhaseTimeline.h"
 
 namespace {
 
@@ -145,6 +146,42 @@ void TestPtpTiming() {
     APW_EXPECT(std::abs(*next_target - (engine_now + 1'100'050LL)) < 100LL);
     APW_EXPECT(engine.Diagnostics().locked);
     APW_EXPECT(std::abs(engine.RateCorrection() - (1.0 / 1.00005)) < 0.00001);
+
+    auto phase_timeline = std::make_shared<airplaywin::timing::RtpPtpPhaseTimeline>();
+    APW_EXPECT(phase_timeline->Publish({
+        .rtp_timestamp = 1'000U,
+        .remote_ptp_nanoseconds = remote_base + 19'000'000'000ULL,
+        .sample_rate = 8'000U,
+        .session_epoch = 3U,
+        .master_clock_identity = 0x0102'0304'0506'0708ULL,
+    }));
+    airplaywin::timing::DisciplinedRtpTimingEngine group_engine{
+        {.remote_clock_rate = 8'000U,
+         .target_buffer_milliseconds = 100U,
+         .endpoint_latency_offset_microseconds = 1'000,
+         .require_phase_anchor = true},
+        std::shared_ptr<PtpClockDomain>{&domain, [](PtpClockDomain*) {}},
+        std::make_unique<ManualClock>(engine_now, 1'000'000LL), phase_timeline};
+    group_engine.Reset(1'000U);
+    const auto group_target = group_engine.RemoteToLocalQpc(1'000U);
+    APW_EXPECT(group_target.has_value());
+    APW_EXPECT(std::abs(*group_target - (engine_now - 1'000LL)) < 100LL);
+    APW_EXPECT(group_engine.Diagnostics().absolute_phase_active);
+    APW_EXPECT(group_engine.Diagnostics().phase_session_epoch == 3U);
+    APW_EXPECT(group_engine.RequiresMappedTarget());
+    group_engine.Reset(1'000U);
+    APW_EXPECT(!group_engine.Diagnostics().absolute_phase_active);
+    APW_EXPECT(group_engine.RemoteToLocalQpc(1'000U).has_value());
+
+    auto missing_timeline = std::make_shared<airplaywin::timing::RtpPtpPhaseTimeline>();
+    airplaywin::timing::DisciplinedRtpTimingEngine waiting_engine{
+        {.remote_clock_rate = 8'000U,
+         .target_buffer_milliseconds = 100U,
+         .require_phase_anchor = true},
+        std::shared_ptr<PtpClockDomain>{&domain, [](PtpClockDomain*) {}},
+        std::make_unique<ManualClock>(engine_now, 1'000'000LL), missing_timeline};
+    APW_EXPECT(!waiting_engine.RemoteToLocalQpc(1'000U).has_value());
+    APW_EXPECT(waiting_engine.Diagnostics().phase_mapping_failures == 1U);
 
     domain.OnDatagram(BuildPtp(8U, 99U, remote_base), local_base);
     diagnostics = domain.Diagnostics();

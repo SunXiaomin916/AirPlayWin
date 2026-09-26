@@ -26,3 +26,8 @@ or holds the control mutex.
 latency (or period fallback) + signed calibration offset. This is operational telemetry, not a
 physical latency measurement. Use the loopback WAVE analyzer before declaring endpoint-specific
 acceptance.
+
+Phase 11 adds `WindowsEndpointCalibrationStore`, an `IEndpointCalibrationStore` adapter backed
+by the current-user registry. It stores manual or measured offsets per complete Windows endpoint
+ID. Fixed-device `--play` and `--serve` runs load a stored value unless the command line supplies
+an explicit override; default-device runs do not reuse a potentially stale endpoint record.

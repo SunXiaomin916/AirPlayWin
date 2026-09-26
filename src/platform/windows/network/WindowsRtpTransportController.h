@@ -7,6 +7,7 @@
 
 #include "core/audio/IAudioFrameSink.h"
 #include "core/timing/PtpClockDomain.h"
+#include "core/timing/RtpPtpPhaseTimeline.h"
 #include "core/transport/IAudioTransportController.h"
 #include "core/transport/IAudioStream.h"
 #include "core/transport/IUdpDatagramHandler.h"
@@ -27,6 +28,8 @@ struct WindowsRtpTransportOptions final {
     bool enable_ptp_timing{false};
     std::uint32_t buffered_timing_milliseconds{120U};
     std::shared_ptr<airplaywin::timing::PtpClockDomain> ptp_clock_domain{};
+    std::shared_ptr<airplaywin::timing::RtpPtpPhaseTimeline> group_phase_timeline{};
+    std::int64_t endpoint_latency_offset_microseconds{0};
 };
 
 class WindowsRtpTransportController final

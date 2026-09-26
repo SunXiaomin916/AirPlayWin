@@ -33,6 +33,7 @@
 #include "platform/windows/audio/WindowsAudioDeviceEnumerator.h"
 #include "platform/windows/audio/WindowsAudioEngine.h"
 #include "platform/windows/audio/WindowsAudioStreamSink.h"
+#include "platform/windows/audio/WindowsEndpointCalibrationStore.h"
 #include "platform/windows/network/WindowsDiscoveryService.h"
 #include "platform/windows/network/IocpTcpServer.h"
 #include "platform/windows/network/WindowsNetworkInterfaceEnumerator.h"
@@ -56,6 +57,7 @@ using airplaywin::windows::audio::WasapiOutputOptions;
 using airplaywin::windows::audio::WindowsAudioDeviceEnumerator;
 using airplaywin::windows::audio::WindowsAudioEngine;
 using airplaywin::windows::audio::WindowsAudioStreamSink;
+using airplaywin::windows::audio::WindowsEndpointCalibrationStore;
 using airplaywin::windows::network::WindowsDiscoveryService;
 using airplaywin::windows::network::IocpTcpServer;
 using airplaywin::windows::network::WindowsNetworkInterfaceEnumerator;
@@ -213,6 +215,9 @@ struct CommandLine final {
     bool exclusive_audio{false};
     bool strict_exclusive{false};
     bool analyze_loopback{false};
+    bool save_endpoint_calibration{false};
+    bool show_endpoint_calibration{false};
+    bool clear_endpoint_calibration{false};
     std::uint32_t buffered_timing_milliseconds{120U};
     std::string ptp_interface_address{"0.0.0.0"};
     std::filesystem::path loopback_capture_path{};
@@ -226,6 +231,7 @@ struct CommandLine final {
     std::uint32_t loopback_maximum_latency_milliseconds{1'000U};
     std::wstring device_id{};
     std::int64_t endpoint_calibration_offset_microseconds{0};
+    bool endpoint_calibration_offset_set{false};
     std::wstring discovery_name{L"AirPlayWin"};
     airplaywin::discovery::DeviceId discovery_device_id{};
     std::uint16_t raop_port{5'000U};
@@ -240,7 +246,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-10 timing validation\n\n"
+        << L"AirPlayWin phase-11 group synchronization validation\n\n"
         << L"  AirPlayWin --help\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
@@ -267,6 +273,10 @@ void PrintUsage() {
         << L"             [--reference-channel <index> --output-channel <index>]\n"
         << L"             [--stimulus-frame <frame> --output-channel <index>]\n"
         << L"             [--onset-threshold <0.01..1.0>] [--max-latency-ms <1..10000>]\n\n"
+        << L"  AirPlayWin --save-endpoint-offset --device <endpoint-id>\n"
+        << L"             --endpoint-offset-us <-1000000..1000000>\n"
+        << L"  AirPlayWin --show-endpoint-offset --device <endpoint-id>\n"
+        << L"  AirPlayWin --clear-endpoint-offset --device <endpoint-id>\n\n"
         << L"  AirPlayWin --firewall-status [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --install-firewall-rules [--raop-port <port>] [--airplay-port <port>]\n"
         << L"  AirPlayWin --remove-firewall-rules\n\n"
@@ -419,6 +429,12 @@ void PrintUsage() {
         } else if (argument == L"--analyze-loopback" && index + 1 < argc) {
             command.analyze_loopback = true;
             command.loopback_capture_path = argv[++index];
+        } else if (argument == L"--save-endpoint-offset") {
+            command.save_endpoint_calibration = true;
+        } else if (argument == L"--show-endpoint-offset") {
+            command.show_endpoint_calibration = true;
+        } else if (argument == L"--clear-endpoint-offset") {
+            command.clear_endpoint_calibration = true;
         } else if (argument == L"--reference-channel" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index], command.loopback_reference_channel) ||
                 command.loopback_reference_channel > 7U) {
@@ -460,6 +476,7 @@ void PrintUsage() {
                     argv[++index], command.endpoint_calibration_offset_microseconds)) {
                 return false;
             }
+            command.endpoint_calibration_offset_set = true;
         } else if (argument == L"--buffered-timing-ms" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index], command.buffered_timing_milliseconds) ||
                 command.buffered_timing_milliseconds < 20U ||
@@ -516,18 +533,35 @@ void PrintUsage() {
     const auto firewall_commands = static_cast<unsigned>(command.firewall_status) +
                                    static_cast<unsigned>(command.install_firewall_rules) +
                                    static_cast<unsigned>(command.remove_firewall_rules);
+    const auto calibration_commands =
+        static_cast<unsigned>(command.save_endpoint_calibration) +
+        static_cast<unsigned>(command.show_endpoint_calibration) +
+        static_cast<unsigned>(command.clear_endpoint_calibration);
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
         (command.run_until_stopped && !command.serve) ||
         (command.experimental_buffered_timing && !command.serve) ||
         (command.experimental_ptp_timing && !command.serve) ||
         (command.experimental_buffered_timing && command.experimental_ptp_timing) ||
         (command.low_latency && !command.play && !command.serve) ||
-        (command.strict_exclusive && !command.exclusive_audio)) {
+        (command.strict_exclusive && !command.exclusive_audio) ||
+        calibration_commands > 1U ||
+        (calibration_commands != 0U && command.device_id.empty()) ||
+        (command.save_endpoint_calibration && !command.endpoint_calibration_offset_set) ||
+        ((command.show_endpoint_calibration || command.clear_endpoint_calibration) &&
+         command.endpoint_calibration_offset_set) ||
+        (command.endpoint_calibration_offset_set && !command.play && !command.serve &&
+         !command.save_endpoint_calibration)) {
         return false;
     }
     if (firewall_commands != 0U &&
         (command.play || command.discover || command.serve || command.list_devices ||
          command.list_network_interfaces)) {
+        return false;
+    }
+    if (calibration_commands != 0U &&
+        (command.play || command.discover || command.serve || command.list_devices ||
+         command.list_network_interfaces || command.analyze_loopback ||
+         firewall_commands != 0U)) {
         return false;
     }
     if (command.analyze_loopback &&
@@ -547,6 +581,63 @@ void PrintUsage() {
         command.loopback_output_channel = 0U;
     }
     return true;
+}
+
+[[nodiscard]] int RunEndpointCalibrationCommand(const CommandLine& command) {
+    WindowsEndpointCalibrationStore store;
+    if (command.save_endpoint_calibration) {
+        if (!store.SaveWindowsEndpoint(
+                command.device_id,
+                command.endpoint_calibration_offset_microseconds,
+                airplaywin::group::EndpointCalibrationSource::Manual)) {
+            std::wcerr << L"Unable to save endpoint calibration; error=0x" << std::hex
+                       << store.LastError() << std::dec << L".\n";
+            return 27;
+        }
+        std::wcout << L"Saved endpoint latency offset: device=\"" << command.device_id
+                   << L"\", offset_us="
+                   << command.endpoint_calibration_offset_microseconds << L".\n";
+        return 0;
+    }
+    if (command.clear_endpoint_calibration) {
+        if (!store.RemoveWindowsEndpoint(command.device_id)) {
+            std::wcerr << L"Unable to clear endpoint calibration; error=0x" << std::hex
+                       << store.LastError() << std::dec << L".\n";
+            return 28;
+        }
+        std::wcout << L"Cleared endpoint latency offset for device=\""
+                   << command.device_id << L"\".\n";
+        return 0;
+    }
+    const auto calibration = store.LoadWindowsEndpoint(command.device_id);
+    if (!calibration.has_value()) {
+        std::wcerr << L"No endpoint calibration is available; error=0x" << std::hex
+                   << store.LastError() << std::dec << L".\n";
+        return 29;
+    }
+    std::wcout << L"Endpoint latency offset: device=\"" << command.device_id
+               << L"\", offset_us=" << calibration->offset_microseconds
+               << L", source="
+               << (calibration->source ==
+                           airplaywin::group::EndpointCalibrationSource::Measured
+                       ? L"measured"
+                       : L"manual")
+               << L".\n";
+    return 0;
+}
+
+void LoadPersistedEndpointCalibration(CommandLine& command) {
+    if (command.device_id.empty() || command.endpoint_calibration_offset_set ||
+        (!command.play && !command.serve)) {
+        return;
+    }
+    WindowsEndpointCalibrationStore store;
+    if (const auto calibration = store.LoadWindowsEndpoint(command.device_id)) {
+        command.endpoint_calibration_offset_microseconds =
+            calibration->offset_microseconds;
+        std::wcout << L"Loaded endpoint latency offset: "
+                   << calibration->offset_microseconds << L" us.\n";
+    }
 }
 
 [[nodiscard]] std::wstring_view FirewallHealthText(
@@ -1020,6 +1111,8 @@ void PrintControlDiagnostics(
                << transport.drift_dropped_frames
                << L", timing_hard_resync="
                << transport.timing_hard_resync_requests
+               << L", unmapped_dropped_frames="
+               << transport.timing_unmapped_dropped_frames
                << L", lost=" << transport.jitter_buffer.lost_packets
                << L", late=" << transport.jitter_buffer.late_packets
                << L", duplicate=" << transport.jitter_buffer.duplicate_packets
@@ -1081,6 +1174,17 @@ void PrintControlDiagnostics(
                << L", anchor_target_qpc=" << transport.timing.anchor_target_qpc
                << L", last_remote=" << transport.timing.last_remote_time
                << L", last_target_qpc=" << transport.timing.last_target_qpc
+               << L", phase(anchor/active/epoch)="
+               << (transport.timing.phase_anchor_available ? L"yes" : L"no") << L"/"
+               << (transport.timing.absolute_phase_active ? L"yes" : L"no") << L"/"
+               << transport.timing.phase_session_epoch
+               << L", phase_remote_ptp_ns="
+               << transport.timing.phase_remote_ptp_nanoseconds
+               << L", phase_map(ok/fail)="
+               << transport.timing.absolute_phase_mappings << L"/"
+               << transport.timing.phase_mapping_failures
+               << L", endpoint_offset_us="
+               << transport.timing.endpoint_latency_offset_microseconds
                << L", servo_state="
                << ClockServoStateName(transport.timing.servo.state)
                << L", master=0x" << std::hex
@@ -1239,7 +1343,9 @@ void PrintRecoveryDiagnostics(
          .enable_buffered_timing = command.experimental_buffered_timing,
          .enable_ptp_timing = command.experimental_ptp_timing,
          .buffered_timing_milliseconds = command.buffered_timing_milliseconds,
-         .ptp_clock_domain = ptp_clock_domain}};
+         .ptp_clock_domain = ptp_clock_domain,
+         .endpoint_latency_offset_microseconds =
+             command.endpoint_calibration_offset_microseconds}};
     airplaywin::protocol::AirPlayControlService control{
         authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
         airplaywin::protocol::ParserLimits{}, &media_transport};
@@ -1336,7 +1442,8 @@ void PrintRecoveryDiagnostics(
                        : L". ")
                << L"PTP timing experiment: "
                << (command.experimental_ptp_timing
-                       ? L"on (receive-only UDP 319/320 servo; S11 phase anchor pending).\n"
+                       ? L"on (receive-only UDP 319/320 servo; an external group "
+                         L"coordinator may publish the S11 RTP/PTP phase anchor).\n"
                        : L"off.\n");
     const auto deadline =
         command.run_until_stopped
@@ -1435,6 +1542,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         PrintUsage();
         return 0;
     }
+    const bool calibration_command = command.save_endpoint_calibration ||
+                                     command.show_endpoint_calibration ||
+                                     command.clear_endpoint_calibration;
+    if (calibration_command) {
+        return RunEndpointCalibrationCommand(command);
+    }
+    LoadPersistedEndpointCalibration(command);
     const bool firewall_command = command.firewall_status || command.install_firewall_rules ||
                                   command.remove_firewall_rules;
     if (firewall_command) {

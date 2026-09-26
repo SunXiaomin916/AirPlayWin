@@ -13,6 +13,10 @@ void TestBufferedTiming();
 void TestClickPopDetector();
 void TestClockServo();
 void TestEndpointLatencyModel();
+void TestEndpointCalibrationStore();
+void TestGroupCoordinator();
+void TestGroupMemberAudioGate();
+void TestGroupTimeline();
 void TestLoopbackLatency();
 void TestDiscovery();
 void TestDriftResampler();
@@ -30,6 +34,7 @@ void TestSdpAndTransport();
 void TestSessionManager();
 void TestSignalGenerator();
 void TestWindowsDiscovery();
+void TestWindowsEndpointCalibrationStore();
 void TestWindowsAudioStreamIntegration();
 void TestWindowsPlatform();
 void TestWindowsPtpTimingService();
@@ -67,6 +72,10 @@ int main() {
     failed += Run("ClickPopDetector", &TestClickPopDetector) ? 0 : 1;
     failed += Run("ClockServo", &TestClockServo) ? 0 : 1;
     failed += Run("EndpointLatencyModel", &TestEndpointLatencyModel) ? 0 : 1;
+    failed += Run("EndpointCalibrationStore", &TestEndpointCalibrationStore) ? 0 : 1;
+    failed += Run("GroupCoordinator", &TestGroupCoordinator) ? 0 : 1;
+    failed += Run("GroupMemberAudioGate", &TestGroupMemberAudioGate) ? 0 : 1;
+    failed += Run("GroupTimeline", &TestGroupTimeline) ? 0 : 1;
     failed += Run("LoopbackLatency", &TestLoopbackLatency) ? 0 : 1;
     failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
     failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
@@ -86,6 +95,8 @@ int main() {
     failed += Run("Discovery", &TestDiscovery) ? 0 : 1;
     failed += Run("DriftResampler", &TestDriftResampler) ? 0 : 1;
     failed += Run("WindowsDiscovery", &TestWindowsDiscovery) ? 0 : 1;
+    failed += Run("WindowsEndpointCalibrationStore",
+                  &TestWindowsEndpointCalibrationStore) ? 0 : 1;
     failed += Run("WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration) ? 0 : 1;
     failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
     failed += Run("WindowsPtpTimingService", &TestWindowsPtpTimingService) ? 0 : 1;

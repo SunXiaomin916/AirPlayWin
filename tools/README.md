@@ -29,6 +29,11 @@ Sync/Follow_Up packet generator. It can inject bounded synthetic drift and a clo
 experimental `--experimental-ptp-timing` receiver. It validates the UDP/IOCP, parser, clock-domain,
 and diagnostics path; PowerShell scheduling is deliberately not treated as calibration evidence.
 
+Phase 11 keeps its repeatable group/member/phase tests in the native suite. The executable adds
+`--save-endpoint-offset`, `--show-endpoint-offset`, and `--clear-endpoint-offset` for a selected
+Windows endpoint. These commands manage calibration data; they do not perform a physical
+measurement or claim group skew acceptance.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
 injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not
 pretend that QPC-only timing measures driver/DAC/analog latency; capture routing remains a

@@ -1,6 +1,6 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 10
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 11
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
 timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
@@ -8,9 +8,11 @@ buffered RTP-to-QPC timing experiment. Phase 8 formalizes the bottom anti-pop pa
 automatic waveform-discontinuity detector and 1,000-cycle regression harness. Phase 9 adds
 opt-in low-latency WASAPI paths, adaptive RTP buffering, and a capture-based latency analyzer.
 Phase 10 adds an experimental receive-only PTPv2/QPC clock domain, drift servo, holdover/relock,
-bounded sample-rate correction, and guarded hard resynchronization. Pairing, Apple codec
-decoding, encryption, complete bidirectional PTP delay measurement, multi-room coordination,
-and WinUI are not implemented yet.
+bounded sample-rate correction, and guarded hard resynchronization. Phase 11 adds an absolute
+RTP/PTP presentation phase, a 2–4 member group coordinator, safe muted joins, independent
+leave/drop, master-change holdover, and persistent per-endpoint offsets. Pairing, Apple codec
+decoding, encryption, complete bidirectional PTP delay measurement, an inter-host group-control
+protocol, Group Sync Analyzer, and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -181,6 +183,26 @@ and WinUI are not implemented yet.
 - Deterministic servo, PTP parser/domain, drift-resampler, hard-resync, Windows IOCP service,
   multicast-option, and exclusive-port-conflict tests cover the new boundary.
 
+## Phase 11 capabilities
+
+- `GroupCoordinator` owns a UI-independent group ID, 2–4 member set, capabilities, target
+  format, master identity, session epoch, endpoint offsets, and join/leave state.
+- `RtpPtpPhaseTimeline` maps a session-epoch/master-qualified RTP timestamp to remote PTP
+  nanoseconds. Group timing then maps remote PTP to local QPC and applies the member endpoint
+  offset; missing or mismatched phase is dropped and counted instead of using a local fallback.
+- New members lock the active master, fill pre-roll, and receive a future common presentation
+  boundary. `GroupMemberAudioGate` submits preallocated silence until that boundary and restores
+  PCM through the existing sample-ramped `AudioTransitionGuard` path.
+- Late join does not pause existing members. Leave/drop does not alter surviving members'
+  timeline or the group session epoch.
+- Master replacement puts active members in holdover. Relock is refused until a matching new
+  master phase is published, preventing a new clock servo from using stale phase data.
+- Endpoint offsets use a platform-neutral manual/measured storage interface. The Windows
+  adapter persists records under HKCU and the CLI can save, inspect, clear, auto-load, or
+  explicitly override the offset for a fixed endpoint.
+- Diagnostics cover group state, member timing/pre-roll/activation, calibration, phase mapping,
+  missing-phase drops, audio-gate muted/audible frames, and ramp transitions.
+
 ## Architecture
 
 ```text
@@ -192,10 +214,17 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
                                                         |
                               RtpAudioStream <- adaptive RtpJitterBuffer
                                     | <-> ITimingEngine <- PtpClockDomain <- UDP 319/320
-                                    |      RTP time -> target QPC       ^    Windows QPC
+                                    |      ^ RTP/PTP phase              ^    Windows QPC
+                                    |      |                            |
+                                    |  GroupCoordinator ----------------+
+                                    |  2-4 members / epoch / master
+                                    |      | member runtime
                                     |      bounded drift correction     |
                                     IAudioDecoder (L16)                 |
                                     | -> preallocated DriftResampler ---+
+                                    |
+                         GroupMemberAudioGate
+                         silent preroll / common boundary
                                     |
                          float32 IAudioFrameSink
                                     v
@@ -312,9 +341,21 @@ Request the minimum-period Shared path, or strict Exclusive mode:
 ```
 
 Without `--strict-exclusive`, an unsupported/busy Exclusive endpoint falls back to Shared mode
-and reports both the active path and fallback HRESULT. `--endpoint-offset-us` applies a measured
-signed endpoint calibration correction to the latency model; it is not a substitute for a
-physical capture.
+and reports both the active path and fallback HRESULT. `--endpoint-offset-us` applies a signed
+endpoint calibration correction to the latency model; it is not a substitute for a physical
+capture. A fixed endpoint can persist the measured value:
+
+```powershell
+.\build\vs2022-x64\Release\AirPlayWin.exe --save-endpoint-offset `
+    --device "{endpoint-id}" --endpoint-offset-us 1500
+.\build\vs2022-x64\Release\AirPlayWin.exe --show-endpoint-offset `
+    --device "{endpoint-id}"
+.\build\vs2022-x64\Release\AirPlayWin.exe --clear-endpoint-offset `
+    --device "{endpoint-id}"
+```
+
+An explicit `--device` run auto-loads the saved offset unless `--endpoint-offset-us` overrides
+it. Default-device runs intentionally do not load a record because the endpoint may change.
 
 Run a 30-minute local soak:
 
@@ -567,6 +608,18 @@ and reported zero parser/socket/service errors. CPack generated
 `AirPlayWin-0.10.0-windows-x64.zip`; its Release executable, project README, installer guide,
 and install/uninstall scripts were inspected.
 
+Phase 11 adds five test modules for the calibration interface, coordinator, member audio gate,
+RTP/PTP phase timeline, and Windows registry persistence, extending the suite to 38 modules.
+Existing timing and RTP-stream tests also cover master handoff holdover, continuous relock,
+large-offset hard resync, absolute phase scheduling, endpoint correction, and mandatory frame
+drops when group phase is unavailable. Detailed results and the physical validation boundary
+are recorded in [phase 11](docs/phase-11.md).
+
+Debug and Release x64 builds pass with `/W4 /WX`; the final Release suite passed 50/50 repeated
+runs in 46.97 seconds. The endpoint-calibration CLI completed a save/show/clear registry
+round-trip with zero errors. CPack generated `AirPlayWin-0.11.0-windows-x64.zip`; its executable,
+README, installer guide, and install/uninstall scripts were listed and inspected.
+
 ## Current boundary
 
 Shared mode remains the default. `--low-latency` opts into `IAudioClient3` when the endpoint
@@ -578,12 +631,13 @@ calibrated loopback WAVE capture is required for receiver-added-latency acceptan
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
 absent pairing, crypto, or Apple codec modules. Phase 7 provides a local single-stream buffered
 timing experiment. Phase 10's separate explicit PTP mode passively receives Sync/Follow_Up,
-disciplines QPC, and corrects sample rate; it does not send Delay_Req, measure path RTT, select a
-grandmaster, or establish the absolute RTP-to-PTP phase required for a complete AirPlay 2 group.
-Those S11 coordination responsibilities remain outside the media transport. Phase 5 accepts
-inbound retransmitted audio on the control port but does not originate resend requests. Current
-Apple senders normally need the deferred pairing, encryption, codecs, and full timing/session
-work, so physical iPhone/iPad/Mac interoperability is not claimed in this phase.
+disciplines QPC, and corrects sample rate; it does not send Delay_Req, measure path RTT, or elect
+a grandmaster. Phase 11 provides the in-process group coordinator and absolute RTP/PTP phase
+contract, but no network protocol yet distributes membership or phase between AirPlayWin hosts.
+The p95/p99 skew targets require S12's Group Sync Analyzer and controlled physical measurement.
+Phase 5 accepts inbound retransmitted audio on the control port but does not originate resend
+requests. Current Apple senders normally need the deferred pairing, encryption, codecs, and
+full timing/session work, so physical iPhone/iPad/Mac interoperability is not claimed yet.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
@@ -594,4 +648,5 @@ See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) 
 [phase 8](docs/phase-8.md) for anti-pop invariants and waveform regression.
 See [phase 9](docs/phase-9.md) for low-latency WASAPI, adaptive buffering, diagnostics, and the
 physical measurement boundary, and [phase 10](docs/phase-10.md) for PTP/QPC clock discipline,
-holdover/relock, drift correction, and the S11 boundary.
+holdover/relock, and drift correction. See [phase 11](docs/phase-11.md) for the group
+coordinator, absolute presentation phase, safe join/leave, and endpoint calibration boundary.

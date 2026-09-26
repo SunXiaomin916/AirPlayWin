@@ -51,6 +51,13 @@ struct TimingDiagnostics final {
     std::int64_t anchor_target_qpc{0};
     std::uint64_t last_remote_time{0U};
     std::int64_t last_target_qpc{0};
+    bool phase_anchor_available{false};
+    bool absolute_phase_active{false};
+    std::uint64_t phase_session_epoch{0U};
+    std::uint64_t phase_remote_ptp_nanoseconds{0U};
+    std::int64_t endpoint_latency_offset_microseconds{0};
+    std::uint64_t absolute_phase_mappings{0U};
+    std::uint64_t phase_mapping_failures{0U};
     ClockServoDiagnostics servo{};
     std::uint32_t last_error{0U};
 };

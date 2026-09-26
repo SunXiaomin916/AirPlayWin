@@ -17,6 +17,7 @@ public:
     [[nodiscard]] virtual TimingDiagnostics Diagnostics() const noexcept = 0;
     [[nodiscard]] virtual double RateCorrection() const noexcept { return 1.0; }
     [[nodiscard]] virtual bool ConsumeHardResyncRequest() noexcept { return false; }
+    [[nodiscard]] virtual bool RequiresMappedTarget() const noexcept { return false; }
 };
 
 }  // namespace airplaywin::timing

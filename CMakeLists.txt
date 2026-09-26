@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.10.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.11.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -24,6 +24,10 @@ add_library(airplaywin_core STATIC
     src/core/crypto/OpenSessionAuthenticator.cpp
     src/core/discovery/AirPlayServiceRecords.cpp
     src/core/discovery/NetworkInterfacePolicy.cpp
+    src/core/group/EndpointCalibrationStore.cpp
+    src/core/group/GroupCoordinator.cpp
+    src/core/group/GroupMemberAudioGate.cpp
+    src/core/group/GroupTypes.cpp
     src/core/lifecycle/RecoveryCoordinator.cpp
     src/core/protocol/AirPlayControlService.cpp
     src/core/protocol/IncrementalRtspParser.cpp
@@ -38,6 +42,7 @@ add_library(airplaywin_core STATIC
     src/core/timing/DisciplinedRtpTimingEngine.cpp
     src/core/timing/PtpClockDomain.cpp
     src/core/timing/PtpPacket.cpp
+    src/core/timing/RtpPtpPhaseTimeline.cpp
     src/core/transport/RtpAudioStream.cpp
     src/core/transport/RtpJitterBuffer.cpp
     src/core/transport/RtpPacket.cpp
@@ -53,6 +58,7 @@ add_library(airplaywin_windows STATIC
     src/platform/windows/audio/WindowsAudioEngine.cpp
     src/platform/windows/audio/WindowsAudioStreamSink.cpp
     src/platform/windows/audio/WindowsAudioDeviceEnumerator.cpp
+    src/platform/windows/audio/WindowsEndpointCalibrationStore.cpp
     src/platform/windows/network/WindowsDiscoveryService.cpp
     src/platform/windows/network/IocpTcpServer.cpp
     src/platform/windows/network/IocpUdpReceiver.cpp

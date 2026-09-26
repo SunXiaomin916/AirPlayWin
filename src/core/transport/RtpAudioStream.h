@@ -97,6 +97,7 @@ private:
     std::atomic<std::uint64_t> drift_inserted_frames_{0U};
     std::atomic<std::uint64_t> drift_dropped_frames_{0U};
     std::atomic<std::uint64_t> timing_hard_resync_requests_{0U};
+    std::atomic<std::uint64_t> timing_unmapped_dropped_frames_{0U};
     std::atomic<std::uint64_t> packet_processing_average_microseconds_{0U};
     std::atomic<std::uint64_t> packet_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decoder_errors_{0U};

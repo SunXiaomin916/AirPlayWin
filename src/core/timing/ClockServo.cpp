@@ -70,18 +70,30 @@ bool ClockServo::AddSample(const ClockSyncSample& sample) noexcept {
     const auto corrected_local_qpc = sample.local_receive_qpc - half_rtt_ticks;
     diagnostics_.rtt_microseconds = sample.round_trip_nanoseconds / 1'000U;
 
-    const bool master_changed = diagnostics_.source_clock_identity != 0U &&
+    if (master_transition_active_ && sample.source_clock_identity != 0U &&
+        sample.source_clock_identity != pending_master_clock_identity_) {
+        ++diagnostics_.rejected_samples;
+        diagnostics_.last_error = 7U;
+        return false;
+    }
+    const bool master_changed = !master_transition_active_ &&
+                                diagnostics_.source_clock_identity != 0U &&
                                 sample.source_clock_identity != 0U &&
                                 diagnostics_.source_clock_identity !=
                                     sample.source_clock_identity;
     if (master_changed) {
+        if (have_model_ && diagnostics_.locked) {
+            BeginMasterTransitionLocked(sample, corrected_local_qpc);
+            ++diagnostics_.accepted_samples;
+            return true;
+        }
         ++diagnostics_.master_change_events;
         ++diagnostics_.generation;
         have_model_ = false;
         diagnostics_.state = ClockServoState::Acquiring;
         diagnostics_.locked = false;
     }
-    if (sample.source_clock_identity != 0U) {
+    if (!master_transition_active_ && sample.source_clock_identity != 0U) {
         diagnostics_.source_clock_identity = sample.source_clock_identity;
     }
 
@@ -106,7 +118,7 @@ bool ClockServo::AddSample(const ClockSyncSample& sample) noexcept {
         return false;
     }
 
-    const auto predicted = MapLocked(sample.remote_time_nanoseconds);
+    const auto predicted = MapCurrentModelLocked(sample.remote_time_nanoseconds);
     if (!predicted.has_value()) {
         ++diagnostics_.rejected_samples;
         diagnostics_.last_error = 4U;
@@ -122,7 +134,7 @@ bool ClockServo::AddSample(const ClockSyncSample& sample) noexcept {
                                                       8U;
 
     if (residual_microseconds >= config_.hard_resync_threshold_microseconds &&
-        diagnostics_.locked) {
+        diagnostics_.locked && !master_transition_active_) {
         ++diagnostics_.hard_resync_events;
         ++diagnostics_.generation;
         diagnostics_.hard_resync_pending = true;
@@ -177,7 +189,15 @@ bool ClockServo::AddSample(const ClockSyncSample& sample) noexcept {
     ++diagnostics_.accepted_samples;
     diagnostics_.last_error = 0U;
 
-    if (diagnostics_.state == ClockServoState::Holdover) {
+    if (master_transition_active_) {
+        if (relock_good_samples_ == 0U) {
+            diagnostics_.state = ClockServoState::Relocking;
+            ++diagnostics_.relock_events;
+        }
+        if (++relock_good_samples_ >= config_.relock_samples) {
+            CompleteMasterTransitionLocked(sample.remote_time_nanoseconds);
+        }
+    } else if (diagnostics_.state == ClockServoState::Holdover) {
         diagnostics_.state = ClockServoState::Relocking;
         diagnostics_.locked = true;
         relock_good_samples_ = 1U;
@@ -218,6 +238,9 @@ void ClockServo::Reset() noexcept {
     last_rate_update_qpc_ = 0;
     acquisition_samples_ = 0U;
     relock_good_samples_ = 0U;
+    master_transition_active_ = false;
+    pending_master_clock_identity_ = 0U;
+    holdover_model_ = {};
 }
 
 std::optional<std::int64_t> ClockServo::RemoteToLocalQpc(
@@ -231,7 +254,12 @@ std::optional<std::int64_t> ClockServo::RemoteToLocalQpc(
 
 double ClockServo::RateCorrection() const noexcept {
     std::scoped_lock lock{mutex_};
-    return diagnostics_.locked ? diagnostics_.rate_correction : 1.0;
+    if (!diagnostics_.locked) {
+        return 1.0;
+    }
+    return master_transition_active_ && holdover_model_.valid
+               ? holdover_model_.rate_correction
+               : diagnostics_.rate_correction;
 }
 
 bool ClockServo::ConsumeHardResyncRequest() noexcept {
@@ -241,7 +269,15 @@ bool ClockServo::ConsumeHardResyncRequest() noexcept {
 
 ClockServoDiagnostics ClockServo::Diagnostics() const noexcept {
     std::scoped_lock lock{mutex_};
-    return diagnostics_;
+    auto result = diagnostics_;
+    if (master_transition_active_ && holdover_model_.valid) {
+        result.source_clock_identity = holdover_model_.source_clock_identity;
+        result.anchor_remote_nanoseconds = holdover_model_.anchor_remote_nanoseconds;
+        result.anchor_local_qpc = holdover_model_.anchor_local_qpc;
+        result.drift_ppm = holdover_model_.drift_ppm;
+        result.rate_correction = holdover_model_.rate_correction;
+    }
+    return result;
 }
 
 void ClockServo::ResetModelLocked(const ClockSyncSample& sample,
@@ -264,6 +300,59 @@ void ClockServo::ResetModelLocked(const ClockSyncSample& sample,
     relock_good_samples_ = 0U;
 }
 
+void ClockServo::BeginMasterTransitionLocked(
+    const ClockSyncSample& sample,
+    const std::int64_t corrected_local_qpc) noexcept {
+    holdover_model_ = {
+        .valid = true,
+        .source_clock_identity = diagnostics_.source_clock_identity,
+        .anchor_remote_nanoseconds = diagnostics_.anchor_remote_nanoseconds,
+        .anchor_local_qpc = diagnostics_.anchor_local_qpc,
+        .drift_ppm = diagnostics_.drift_ppm,
+        .rate_correction = diagnostics_.rate_correction,
+    };
+    pending_master_clock_identity_ = sample.source_clock_identity;
+    ++diagnostics_.master_change_events;
+    ++diagnostics_.holdover_events;
+    ++diagnostics_.generation;
+    ResetModelLocked(sample, corrected_local_qpc);
+    master_transition_active_ = true;
+    diagnostics_.state = ClockServoState::Holdover;
+    diagnostics_.locked = true;
+    acquisition_samples_ = 1U;
+}
+
+void ClockServo::CompleteMasterTransitionLocked(
+    const std::uint64_t remote_time_nanoseconds) noexcept {
+    const auto old_target = MapHoldoverModelLocked(remote_time_nanoseconds);
+    const auto new_target = MapCurrentModelLocked(remote_time_nanoseconds);
+    if (!old_target.has_value() || !new_target.has_value()) {
+        diagnostics_.hard_resync_pending = true;
+        ++diagnostics_.hard_resync_events;
+    } else {
+        const auto difference = SaturatingRoundToInt64(std::abs(
+            static_cast<long double>(*old_target) -
+            static_cast<long double>(*new_target)));
+        if (TicksToMicroseconds(difference) >=
+            config_.hard_resync_threshold_microseconds) {
+            diagnostics_.hard_resync_pending = true;
+            ++diagnostics_.hard_resync_events;
+        } else {
+            diagnostics_.anchor_local_qpc = SaturatingRoundToInt64(
+                static_cast<long double>(diagnostics_.anchor_local_qpc) +
+                static_cast<long double>(*old_target) -
+                static_cast<long double>(*new_target));
+        }
+    }
+    diagnostics_.source_clock_identity = pending_master_clock_identity_;
+    diagnostics_.state = ClockServoState::Locked;
+    diagnostics_.locked = true;
+    diagnostics_.last_error = 0U;
+    master_transition_active_ = false;
+    pending_master_clock_identity_ = 0U;
+    holdover_model_ = {};
+}
+
 void ClockServo::UpdateStateLocked(const std::int64_t now_qpc) noexcept {
     if (!have_model_ || now_qpc <= last_local_qpc_) {
         return;
@@ -274,6 +363,9 @@ void ClockServo::UpdateStateLocked(const std::int64_t now_qpc) noexcept {
         diagnostics_.state = ClockServoState::Unlocked;
         diagnostics_.locked = false;
         diagnostics_.rate_correction = 1.0;
+        master_transition_active_ = false;
+        pending_master_clock_identity_ = 0U;
+        holdover_model_ = {};
         return;
     }
     if (age >= config_.holdover_after_microseconds &&
@@ -302,6 +394,14 @@ void ClockServo::UpdateRateCorrectionLocked(const std::int64_t now_qpc) noexcept
 
 std::optional<std::int64_t> ClockServo::MapLocked(
     const std::uint64_t remote_time_nanoseconds) const noexcept {
+    if (master_transition_active_ && holdover_model_.valid) {
+        return MapHoldoverModelLocked(remote_time_nanoseconds);
+    }
+    return MapCurrentModelLocked(remote_time_nanoseconds);
+}
+
+std::optional<std::int64_t> ClockServo::MapCurrentModelLocked(
+    const std::uint64_t remote_time_nanoseconds) const noexcept {
     if (!have_model_) {
         return std::nullopt;
     }
@@ -312,6 +412,26 @@ std::optional<std::int64_t> ClockServo::MapLocked(
     const auto local_delta = remote_delta * config_.local_clock_frequency * rate /
                              1'000'000'000.0L;
     const auto mapped = static_cast<long double>(diagnostics_.anchor_local_qpc) + local_delta;
+    if (mapped > static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ||
+        mapped < static_cast<long double>(std::numeric_limits<std::int64_t>::min())) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(std::llround(mapped));
+}
+
+std::optional<std::int64_t> ClockServo::MapHoldoverModelLocked(
+    const std::uint64_t remote_time_nanoseconds) const noexcept {
+    if (!holdover_model_.valid) {
+        return std::nullopt;
+    }
+    const auto remote_delta = static_cast<long double>(remote_time_nanoseconds) -
+                              holdover_model_.anchor_remote_nanoseconds;
+    const auto rate = 1.0L + static_cast<long double>(holdover_model_.drift_ppm) /
+                                  1'000'000.0L;
+    const auto local_delta = remote_delta * config_.local_clock_frequency * rate /
+                             1'000'000'000.0L;
+    const auto mapped = static_cast<long double>(holdover_model_.anchor_local_qpc) +
+                        local_delta;
     if (mapped > static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ||
         mapped < static_cast<long double>(std::numeric_limits<std::int64_t>::min())) {
         return std::nullopt;

@@ -74,7 +74,8 @@ contains remote nanoseconds, receive QPC, optional RTT, and source clock identit
 - low-pass filters bounded drift and phase residuals;
 - rejects non-monotonic, excessive-RTT, residual-outlier, and implausible-slope samples;
 - limits rate-correction movement in ppm per second;
-- resets acquisition on a source-clock change;
+- enters guarded holdover while a replacement source-clock model acquires (the S11 handoff
+  extension preserves the old presentation model until relock);
 - creates a one-shot hard-resync request for a large discontinuity after lock.
 
 The state machine is:

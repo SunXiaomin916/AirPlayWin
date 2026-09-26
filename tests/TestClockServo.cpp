@@ -127,9 +127,40 @@ void TestClockServo() {
     }));
     const auto changed_master = jittered.Diagnostics();
     APW_EXPECT(changed_master.master_change_events == 1U);
-    APW_EXPECT(changed_master.source_clock_identity == identity + 1U);
-    APW_EXPECT(changed_master.state == ClockServoState::Acquiring);
-    APW_EXPECT(!changed_master.locked);
+    APW_EXPECT(changed_master.source_clock_identity == identity);
+    APW_EXPECT(changed_master.state == ClockServoState::Holdover);
+    APW_EXPECT(changed_master.locked);
+    const auto holdover_target = jittered.RemoteToLocalQpc(5'125'000'000ULL);
+    APW_EXPECT(holdover_target.has_value());
+    for (std::uint64_t sample = 1U; sample <= 3U; ++sample) {
+        APW_EXPECT(jittered.AddSample(ClockSyncSample{
+            .remote_time_nanoseconds = 5'000'000'000ULL + sample * 125'000'000ULL,
+            .local_receive_qpc = base_qpc + 5'000'500LL +
+                                 static_cast<std::int64_t>(sample * 125'012ULL),
+            .source_clock_identity = identity + 1U,
+        }));
+    }
+    const auto relocked_master = jittered.Diagnostics();
+    APW_EXPECT(relocked_master.source_clock_identity == identity + 1U);
+    APW_EXPECT(relocked_master.state == ClockServoState::Locked);
+    APW_EXPECT(relocked_master.locked);
+    APW_EXPECT(relocked_master.relock_events == 1U);
+    const auto relocked_target = jittered.RemoteToLocalQpc(5'500'000'000ULL);
+    APW_EXPECT(relocked_target.has_value());
+    APW_EXPECT(!jittered.ConsumeHardResyncRequest());
+
+    constexpr std::uint64_t third_identity = identity + 2U;
+    for (std::uint64_t sample = 0U; sample <= 3U; ++sample) {
+        APW_EXPECT(jittered.AddSample(ClockSyncSample{
+            .remote_time_nanoseconds = 6'000'000'000ULL + sample * 125'000'000ULL,
+            .local_receive_qpc = base_qpc + 6'000'600LL + 100'000LL +
+                                 static_cast<std::int64_t>(sample * 125'012ULL),
+            .source_clock_identity = third_identity,
+        }));
+    }
+    APW_EXPECT(jittered.Diagnostics().source_clock_identity == third_identity);
+    APW_EXPECT(jittered.Diagnostics().hard_resync_events == 1U);
+    APW_EXPECT(jittered.ConsumeHardResyncRequest());
 
     bool rejected = false;
     try {
