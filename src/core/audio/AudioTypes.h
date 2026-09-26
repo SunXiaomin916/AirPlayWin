@@ -132,6 +132,9 @@ struct AudioDiagnosticsSnapshot final {
     std::wstring current_device_id{};
     std::uint32_t current_sample_rate{0};
     std::uint64_t current_audio_epoch{0};
+    bool session_volume_active{false};
+    float session_volume_scalar{1.0F};
+    std::uint32_t session_volume_error{0};
     std::uint32_t last_output_error{0};
     bool output_recovering{false};
     AudioTransitionState transition_state{AudioTransitionState::Stopped};

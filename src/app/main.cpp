@@ -975,6 +975,11 @@ void PrintDiagnostics(const WindowsAudioEngine& engine) {
                << L", fallback_error=0x" << std::hex
                << diagnostics.output_mode_fallback_error
                << L", output_error=0x" << diagnostics.last_output_error << std::dec
+               << L", session_volume="
+               << (diagnostics.session_volume_active ? L"active/" : L"fallback/")
+               << diagnostics.session_volume_scalar
+               << L", session_volume_error=0x" << std::hex
+               << diagnostics.session_volume_error << std::dec
                << L", recovering="
                << (diagnostics.output_recovering ? L"yes" : L"no")
                << L", recovery(attempt/success/fail)="
@@ -1429,6 +1434,11 @@ void PrintControlDiagnostics(
                << (audio.output.low_latency_active ? L"active" : L"inactive")
                << L", fallback="
                << (audio.output.output_mode_fallback ? L"yes" : L"no")
+               << L", session_volume="
+               << (audio.output.session_volume_active ? L"active/" : L"fallback/")
+               << audio.output.session_volume_scalar
+               << L", session_volume_error=0x" << std::hex
+               << audio.output.session_volume_error << std::dec
                << L", wakeups=" << audio.output.render_wakeup_count
                << L", exclusive_start_timeouts="
                << audio.output.exclusive_start_timeouts

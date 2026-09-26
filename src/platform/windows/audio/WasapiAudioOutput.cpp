@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
 #include <avrt.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
@@ -11,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -40,6 +42,12 @@ using airplaywin::audio::AudioTransition;
 using airplaywin::audio::AudioTransitionState;
 
 constexpr std::uint64_t kReferenceTimeUnitsPerSecond = 10'000'000U;
+constexpr GUID kAirPlayWinVolumeContext{
+    0xa4bf7cd8U, 0xb4cbU, 0x44a8U, {0x92U, 0xd9U, 0x7fU, 0x92U, 0xa7U, 0xe4U, 0x21U, 0x19U}};
+
+[[nodiscard]] float SanitizeVolume(const float linear_gain) noexcept {
+    return std::isfinite(linear_gain) ? std::clamp(linear_gain, 0.0F, 1.0F) : 0.0F;
+}
 
 [[nodiscard]] DWORD ChannelMask(const std::uint16_t channel_count) noexcept {
     switch (channel_count) {
@@ -389,8 +397,24 @@ public:
     }
 
     void SetVolume(const float linear_gain) noexcept {
+        const auto safe_gain = SanitizeVolume(linear_gain);
+        desired_session_volume_.store(safe_gain, std::memory_order_release);
+
+        std::scoped_lock lock(session_volume_mutex_);
+        HRESULT volume_result = S_FALSE;
+        auto session_active = false;
+        if (session_volume_ != nullptr) {
+            volume_result = session_volume_->SetMasterVolume(
+                safe_gain, &kAirPlayWinVolumeContext);
+            session_active = SUCCEEDED(volume_result);
+        }
+        session_volume_active_.store(session_active, std::memory_order_release);
+        session_volume_error_.store(volume_result, std::memory_order_release);
         if (guard_ != nullptr) {
-            guard_->SetTargetVolume(linear_gain);
+            // Shared-mode session volume is the user-volume authority. Keeping the
+            // guard at unity avoids applying the sender gain twice; transition,
+            // underrun and device-switch ramps remain owned by the guard.
+            guard_->SetTargetVolume(session_active ? 1.0F : safe_gain);
         }
     }
 
@@ -486,6 +510,12 @@ public:
             .current_device_id = {},
             .current_sample_rate = format_.sample_rate,
             .current_audio_epoch = current_epoch_.load(std::memory_order_acquire),
+            .session_volume_active =
+                session_volume_active_.load(std::memory_order_acquire),
+            .session_volume_scalar =
+                desired_session_volume_.load(std::memory_order_acquire),
+            .session_volume_error = static_cast<std::uint32_t>(
+                session_volume_error_.load(std::memory_order_acquire)),
             .last_output_error =
                 static_cast<std::uint32_t>(last_error_.load(std::memory_order_relaxed)),
             .output_recovering = output_recovering_.load(std::memory_order_acquire),
@@ -831,6 +861,13 @@ private:
             return false;
         }
 
+        ComPtr<ISimpleAudioVolume> next_session_volume;
+        HRESULT next_session_volume_result = S_FALSE;
+        if (active_mode == AudioOutputMode::Shared) {
+            next_session_volume_result =
+                next_client->GetService(IID_PPV_ARGS(&next_session_volume));
+        }
+
         if (endpoint_sample_format == AudioEndpointSampleFormat::Pcm16) {
             try {
                 render_scratch_.resize(static_cast<std::size_t>(next_buffer_frames) *
@@ -871,6 +908,27 @@ private:
         endpoint_device_ = std::move(next_device);
         audio_client_ = std::move(next_client);
         render_client_ = std::move(next_render_client);
+        {
+            std::scoped_lock lock(session_volume_mutex_);
+            session_volume_ = std::move(next_session_volume);
+            auto session_active = false;
+            if (session_volume_ != nullptr) {
+                const auto desired_volume =
+                    desired_session_volume_.load(std::memory_order_acquire);
+                next_session_volume_result = session_volume_->SetMasterVolume(
+                    desired_volume, &kAirPlayWinVolumeContext);
+                session_active = SUCCEEDED(next_session_volume_result);
+            }
+            session_volume_active_.store(session_active, std::memory_order_release);
+            session_volume_error_.store(next_session_volume_result,
+                                        std::memory_order_release);
+            if (guard_ != nullptr) {
+                guard_->SetTargetVolume(
+                    session_active
+                        ? 1.0F
+                        : desired_session_volume_.load(std::memory_order_acquire));
+            }
+        }
         endpoint_buffer_frames_ = next_buffer_frames;
         published_endpoint_buffer_frames_.store(next_buffer_frames,
                                                 std::memory_order_release);
@@ -958,6 +1016,12 @@ private:
                 last_error_.store(stop_result, std::memory_order_release);
             }
             physical_client_started_ = false;
+        }
+        {
+            std::scoped_lock lock(session_volume_mutex_);
+            session_volume_.Reset();
+            session_volume_active_.store(false, std::memory_order_release);
+            session_volume_error_.store(S_FALSE, std::memory_order_release);
         }
         render_client_.Reset();
         audio_client_.Reset();
@@ -1244,11 +1308,13 @@ private:
     std::thread worker_{};
     mutable std::mutex control_mutex_;
     mutable std::mutex device_id_mutex_;
+    mutable std::mutex session_volume_mutex_;
 
     ComPtr<IMMDeviceEnumerator> device_enumerator_;
     ComPtr<IMMDevice> endpoint_device_;
     ComPtr<IAudioClient> audio_client_;
     ComPtr<IAudioRenderClient> render_client_;
+    ComPtr<ISimpleAudioVolume> session_volume_;
     ComPtr<NotificationClient> notification_client_;
     UINT32 endpoint_buffer_frames_{0U};
     std::uint32_t target_queue_frames_{0U};
@@ -1285,6 +1351,9 @@ private:
     std::atomic<std::uint64_t> device_recovery_successes_{0U};
     std::atomic<std::uint64_t> device_recovery_failures_{0U};
     std::atomic<bool> output_recovering_{false};
+    std::atomic<float> desired_session_volume_{1.0F};
+    std::atomic<bool> session_volume_active_{false};
+    std::atomic<HRESULT> session_volume_error_{S_FALSE};
     std::atomic<HRESULT> last_error_{S_OK};
 };
 

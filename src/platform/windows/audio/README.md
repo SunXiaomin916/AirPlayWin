@@ -12,6 +12,13 @@ Shared. Exclusive can either fall back the same way or fail strictly. Diagnostic
 requested mode, active mode, client path, endpoint sample format, and the HRESULT that caused a
 fallback.
 
+In Shared mode, sender volume is applied through the stream's `ISimpleAudioVolume` session. This
+makes iPhone/iPad/Mac volume changes visible on the Windows per-app volume-mixer slider for
+`AirPlayWin.exe`. The requested scalar is reapplied whenever the endpoint is rebuilt. The PCM
+guard stays at unity on this path to avoid double attenuation, while it still owns start/stop,
+pause/resume, flush, underrun, and device-switch ramps. Exclusive mode, or a failed session-volume
+service, falls back to the guard's pre-existing sample-ramped PCM volume.
+
 The render worker starts before an Exclusive stream, matching the event-driven requirement that
 the first buffer event be serviced promptly. A bounded watchdog detects a stream that starts but
 never renders. Exclusive events release the entire endpoint buffer; Shared events use current

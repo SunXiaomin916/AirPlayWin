@@ -21,6 +21,9 @@ regression runner without claiming unperformed physical multi-speaker measuremen
 - CMake C++23 project for Visual Studio 2022 and Windows 11.
 - Protocol-independent `AudioEngine` and `IAudioOutput` boundary.
 - WASAPI shared-mode, event-driven float32 renderer.
+- AirPlay sender volume synchronized with the Windows per-app mixer session for
+  `AirPlayWin.exe`, including restoration after default-device recovery; Exclusive mode falls
+  back to sample-ramped PCM gain.
 - Default endpoint or an explicitly selected endpoint.
 - `IMMNotificationClient` recovery for default-device changes and endpoint hot-plug/removal.
 - Fixed-capacity, preallocated SPSC PCM ring buffer.
@@ -87,7 +90,8 @@ regression runner without claiming unperformed physical multi-speaker measuremen
 - Classic four-byte retransmitted-audio wrappers are accepted on the negotiated control port,
   unwrapped, and passed through the normal RTP/SSRC/payload/timeline checks.
 - RECORD returns `Audio-Latency: 11025` for the classic L16 development profile.
-- `text/parameters` volume supports multiline SET and query GET; changes remain sample-ramped
+- `text/parameters` volume supports multiline SET and query GET; Shared-mode changes synchronize
+  the Windows per-app mixer session, while non-session output falls back to sample-ramped PCM gain
   at the bottom audio transition guard.
 - Decoded frames carry an optional target QPC scheduling field. Phase 5 uses arrival QPC; phase
   7 can populate a local buffered RTP timeline while full sender-clock synchronization remains
@@ -669,6 +673,12 @@ generated `AirPlayWin-0.12.0-windows-x64.zip` with the receiver, native regressi
 S12 tools/docs, and installer files; the packaged regression runner passed its standalone smoke
 test.
 
+A physical iPhone classic-RAOP volume test exercised 16 distinct sender-volume scalars from
+approximately 0.038 to 1.0. All 31 sampled active WASAPI sessions reported
+`ISimpleAudioVolume` success, and the `AirPlayWin.exe` slider followed the phone in Windows
+Volume Mixer. The run reported zero parser rejections, decoder errors, WASAPI output errors,
+numeric faults, and click/pop events.
+
 ## Current boundary
 
 Shared mode remains the default. `--low-latency` opts into `IAudioClient3` when the endpoint
@@ -677,17 +687,19 @@ opts into the event-driven Exclusive path and may negotiate PCM16; strict mode d
 fallback. Latency values printed during playback are a decomposed software model. A physical or
 calibrated loopback WAVE capture is required for receiver-added-latency acceptance.
 
-Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
-absent pairing, crypto, or Apple codec modules. Phase 7 provides a local single-stream buffered
-timing experiment. Phase 10's separate explicit PTP mode passively receives Sync/Follow_Up,
-disciplines QPC, and corrects sample rate; it does not send Delay_Req, measure path RTT, or elect
-a grandmaster. Phase 11 provides the in-process group coordinator and absolute RTP/PTP phase
-contract, but no network protocol yet distributes membership or phase between AirPlayWin hosts.
-Phase 12 provides the Group Sync Analyzer and automated p95/p99 gates; acceptance of those targets
-still requires a controlled synchronized physical capture rather than timestamp simulation alone.
-Phase 5 accepts inbound retransmitted audio on the control port but does not originate resend
-requests. Current Apple senders normally need the deferred pairing, encryption, codecs, and
-full timing/session work, so physical iPhone/iPad/Mac interoperability is not claimed yet.
+Discovery is IPv4-first. The classic RAOP path handles Apple-Challenge, RSA-OAEP session-key
+recovery, AES-128-CBC audio, and Apple Lossless through the Windows inbox Media Foundation
+decoder; physical iPhone playback and sender-volume control have been exercised. This does not
+claim full AirPlay 2 interoperability: pairing/FairPlay, complete PTP participation, distributed
+multi-room membership, and the modern session paths remain deferred. Phase 7 provides a local
+single-stream buffered timing experiment. Phase 10's separate explicit PTP mode passively
+receives Sync/Follow_Up, disciplines QPC, and corrects sample rate; it does not send Delay_Req,
+measure path RTT, or elect a grandmaster. Phase 11 provides the in-process group coordinator and
+absolute RTP/PTP phase contract, but no network protocol yet distributes membership or phase
+between AirPlayWin hosts. Phase 12 provides the Group Sync Analyzer and automated p95/p99 gates;
+acceptance of those targets still requires a controlled synchronized physical capture rather
+than timestamp simulation alone. Phase 5 accepts inbound retransmitted audio on the control port
+but does not originate resend requests.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
