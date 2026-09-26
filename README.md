@@ -1,6 +1,6 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 11
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 12
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
 timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
@@ -12,7 +12,9 @@ bounded sample-rate correction, and guarded hard resynchronization. Phase 11 add
 RTP/PTP presentation phase, a 2–4 member group coordinator, safe muted joins, independent
 leave/drop, master-change holdover, and persistent per-endpoint offsets. Pairing, Apple codec
 decoding, encryption, complete bidirectional PTP delay measurement, an inter-host group-control
-protocol, Group Sync Analyzer, and WinUI are not implemented yet.
+protocol, and WinUI are not implemented yet. Phase 12 adds offline group-skew analysis,
+deterministic network fault injection, accelerated clock-soak coverage, and a real wall-clock
+regression runner without claiming unperformed physical multi-speaker measurements.
 
 ## Phase 1 capabilities
 
@@ -202,6 +204,25 @@ protocol, Group Sync Analyzer, and WinUI are not implemented yet.
   explicitly override the offset for a fixed endpoint.
 - Diagnostics cover group state, member timing/pre-roll/activation, calibration, phase mapping,
   missing-phase drops, audio-gate muted/audible frames, and ramp transitions.
+
+## Phase 12 capabilities
+
+- `GroupSyncAnalyzer` accepts either 2–4 channel pulse captures or timestamp observations and
+  reports complete/incomplete pulses, first alignment, group skew p50/p95/p99/max, per-member
+  signed/absolute offsets, and waveform correlation quality.
+- `--analyze-group-sync` exposes capture analysis at the CLI and returns a distinct nonzero exit
+  code when analysis succeeds but the default p95 ≤ 1 ms / p99 ≤ 2 ms targets are missed.
+- Group diagnostics retain the existing group/member/master identity and now add recent/maximum
+  join and relock durations derived from the shared remote PTP timeline.
+- `NetworkFaultInjector` provides fixed-seed latency, up to 100 ms jitter, random loss, burst
+  loss, duplication, and reordering decisions without touching the production transport path.
+- The RTP replay tool can reproduce base latency, jitter, random/burst loss, periodic duplicate,
+  and pair-reordering cases. Its seed and per-cause counters are printed with every run.
+- An accelerated deterministic 24-hour, four-member clock simulation exercises ±100 ppm,
+  0.5/2/5-second holdover, packet loss, master replacement, relock, and skew acceptance.
+- CTest labels isolate synchronization, anti-pop, and latency regressions for CI.
+  `Run-S12Regression.ps1 -DurationHours 24` repeats the native suite for a real 24-hour wall-clock
+  software soak and writes a machine-readable JSON result.
 
 ## Architecture
 
@@ -620,6 +641,19 @@ runs in 46.97 seconds. The endpoint-calibration CLI completed a save/show/clear 
 round-trip with zero errors. CPack generated `AirPlayWin-0.11.0-windows-x64.zip`; its executable,
 README, installer guide, and install/uninstall scripts were listed and inspected.
 
+Phase 12 adds three modules for multichannel/timestamp group-skew analysis, deterministic
+network-fault decisions, and an accelerated 24-hour four-member clock simulation. The suite now
+contains 41 modules. Synchronization, anti-pop, and loopback-latency regressions also have
+independent CTest labels, while the PowerShell runner supports a genuine elapsed-time soak and
+machine-readable JSON results. See [phase 12](docs/phase-12.md) for commands, metrics, and the
+physical validation boundary.
+
+Debug and Release builds pass with `/W4 /WX`; all 41 modules pass, all three isolated Release
+CI gates pass, and the final Release suite completed 50/50 repetitions in 52.728 seconds. CPack
+generated `AirPlayWin-0.12.0-windows-x64.zip` with the receiver, native regression executable,
+S12 tools/docs, and installer files; the packaged regression runner passed its standalone smoke
+test.
+
 ## Current boundary
 
 Shared mode remains the default. `--low-latency` opts into `IAudioClient3` when the endpoint
@@ -634,7 +668,8 @@ timing experiment. Phase 10's separate explicit PTP mode passively receives Sync
 disciplines QPC, and corrects sample rate; it does not send Delay_Req, measure path RTT, or elect
 a grandmaster. Phase 11 provides the in-process group coordinator and absolute RTP/PTP phase
 contract, but no network protocol yet distributes membership or phase between AirPlayWin hosts.
-The p95/p99 skew targets require S12's Group Sync Analyzer and controlled physical measurement.
+Phase 12 provides the Group Sync Analyzer and automated p95/p99 gates; acceptance of those targets
+still requires a controlled synchronized physical capture rather than timestamp simulation alone.
 Phase 5 accepts inbound retransmitted audio on the control port but does not originate resend
 requests. Current Apple senders normally need the deferred pairing, encryption, codecs, and
 full timing/session work, so physical iPhone/iPad/Mac interoperability is not claimed yet.
@@ -650,3 +685,5 @@ See [phase 9](docs/phase-9.md) for low-latency WASAPI, adaptive buffering, diagn
 physical measurement boundary, and [phase 10](docs/phase-10.md) for PTP/QPC clock discipline,
 holdover/relock, and drift correction. See [phase 11](docs/phase-11.md) for the group
 coordinator, absolute presentation phase, safe join/leave, and endpoint calibration boundary.
+See [phase 12](docs/phase-12.md) for skew analysis, fault injection, soak automation, and the
+remaining physical acceptance matrix.

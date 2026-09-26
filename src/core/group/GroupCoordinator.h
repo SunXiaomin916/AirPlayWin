@@ -44,6 +44,10 @@ struct GroupCoordinatorDiagnostics final {
     std::uint64_t relock_events{0U};
     std::uint64_t master_change_events{0U};
     std::uint64_t calibration_updates{0U};
+    std::uint64_t last_join_time_microseconds{0U};
+    std::uint64_t maximum_join_time_microseconds{0U};
+    std::uint64_t last_relock_time_microseconds{0U};
+    std::uint64_t maximum_relock_time_microseconds{0U};
     std::uint32_t last_error{0U};
 };
 
@@ -96,6 +100,7 @@ private:
         std::uint64_t uncertainty_microseconds{0U};
         std::int64_t endpoint_latency_offset_microseconds{0};
         std::uint64_t activation_remote_ptp_nanoseconds{0U};
+        std::uint64_t join_started_remote_ptp_nanoseconds{0U};
         std::uint32_t activation_rtp_timestamp{0U};
         std::shared_ptr<GroupMemberRuntime> runtime{};
     };
@@ -110,6 +115,7 @@ private:
     mutable std::mutex mutex_{};
     std::unordered_map<GroupMemberId, Member> members_{};
     GroupCoordinatorDiagnostics diagnostics_{};
+    std::uint64_t relock_started_remote_ptp_nanoseconds_{0U};
 };
 
 }  // namespace airplaywin::group

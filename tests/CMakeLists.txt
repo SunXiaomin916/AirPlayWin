@@ -14,8 +14,11 @@ add_executable(airplaywin_tests
     TestEndpointCalibrationStore.cpp
     TestGroupCoordinator.cpp
     TestGroupMemberAudioGate.cpp
+    TestGroupSyncAnalyzer.cpp
+    TestGroupSoakRegression.cpp
     TestGroupTimeline.cpp
     TestLoopbackLatency.cpp
+    TestNetworkFaultInjector.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
     TestDriftResampler.cpp
@@ -49,3 +52,9 @@ target_link_libraries(airplaywin_tests PRIVATE airplaywin_core airplaywin_window
 airplaywin_set_warnings(airplaywin_tests)
 
 add_test(NAME airplaywin_unit_tests COMMAND airplaywin_tests)
+add_test(NAME airplaywin_sync_regression COMMAND airplaywin_tests --only GroupSoakRegression)
+add_test(NAME airplaywin_antipop_regression COMMAND airplaywin_tests --only AntiPopStress)
+add_test(NAME airplaywin_latency_regression COMMAND airplaywin_tests --only LoopbackLatency)
+set_tests_properties(airplaywin_sync_regression PROPERTIES LABELS "ci;sync;soak")
+set_tests_properties(airplaywin_antipop_regression PROPERTIES LABELS "ci;anti-pop")
+set_tests_properties(airplaywin_latency_regression PROPERTIES LABELS "ci;latency")

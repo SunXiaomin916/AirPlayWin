@@ -27,6 +27,7 @@
 #include "core/audio/TestSignalGenerator.h"
 #include "core/crypto/OpenSessionAuthenticator.h"
 #include "core/discovery/AirPlayServiceRecords.h"
+#include "core/group/GroupSyncAnalyzer.h"
 #include "core/lifecycle/RecoveryCoordinator.h"
 #include "core/protocol/AirPlayControlService.h"
 #include "core/timing/PtpClockDomain.h"
@@ -163,6 +164,22 @@ using airplaywin::windows::timing::WindowsPtpTimingService;
     return L"unknown";
 }
 
+[[nodiscard]] std::wstring_view GroupSyncStatusName(
+    const airplaywin::group::GroupSyncAnalysisStatus status) noexcept {
+    using airplaywin::group::GroupSyncAnalysisStatus;
+    switch (status) {
+    case GroupSyncAnalysisStatus::Ok:
+        return L"ok";
+    case GroupSyncAnalysisStatus::InvalidConfiguration:
+        return L"invalid-configuration";
+    case GroupSyncAnalysisStatus::NoReferencePulses:
+        return L"no-reference-pulses";
+    case GroupSyncAnalysisStatus::InsufficientCompletePulses:
+        return L"insufficient-complete-pulses";
+    }
+    return L"unknown";
+}
+
 [[nodiscard]] std::atomic_bool& ShutdownRequestedFlag() noexcept {
     static std::atomic_bool requested{false};
     return requested;
@@ -215,20 +232,27 @@ struct CommandLine final {
     bool exclusive_audio{false};
     bool strict_exclusive{false};
     bool analyze_loopback{false};
+    bool analyze_group_sync{false};
     bool save_endpoint_calibration{false};
     bool show_endpoint_calibration{false};
     bool clear_endpoint_calibration{false};
     std::uint32_t buffered_timing_milliseconds{120U};
     std::string ptp_interface_address{"0.0.0.0"};
     std::filesystem::path loopback_capture_path{};
+    std::filesystem::path group_sync_capture_path{};
     std::uint32_t loopback_reference_channel{0U};
     std::uint32_t loopback_output_channel{1U};
     bool loopback_reference_channel_set{false};
     bool loopback_output_channel_set{false};
     bool loopback_analysis_option_set{false};
+    bool group_analysis_option_set{false};
+    bool onset_threshold_set{false};
     std::optional<std::uint64_t> loopback_stimulus_frame{};
     float loopback_onset_threshold{0.25F};
     std::uint32_t loopback_maximum_latency_milliseconds{1'000U};
+    std::vector<std::uint16_t> group_sync_channels{};
+    std::uint32_t group_sync_minimum_pulse_gap_milliseconds{100U};
+    std::uint32_t group_sync_maximum_skew_milliseconds{100U};
     std::wstring device_id{};
     std::int64_t endpoint_calibration_offset_microseconds{0};
     bool endpoint_calibration_offset_set{false};
@@ -246,7 +270,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-11 group synchronization validation\n\n"
+        << L"AirPlayWin phase-12 synchronization regression tools\n\n"
         << L"  AirPlayWin --help\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
@@ -273,6 +297,10 @@ void PrintUsage() {
         << L"             [--reference-channel <index> --output-channel <index>]\n"
         << L"             [--stimulus-frame <frame> --output-channel <index>]\n"
         << L"             [--onset-threshold <0.01..1.0>] [--max-latency-ms <1..10000>]\n\n"
+        << L"  AirPlayWin --analyze-group-sync <capture.wav>\n"
+        << L"             [--group-channels <0,1[,2,3]>]\n"
+        << L"             [--onset-threshold <0.01..1.0>] [--pulse-gap-ms <10..10000>]\n"
+        << L"             [--max-skew-ms <1..1000>]\n\n"
         << L"  AirPlayWin --save-endpoint-offset --device <endpoint-id>\n"
         << L"             --endpoint-offset-us <-1000000..1000000>\n"
         << L"  AirPlayWin --show-endpoint-offset --device <endpoint-id>\n"
@@ -286,6 +314,7 @@ void PrintUsage() {
         << L"  AirPlayWin --play --low-latency --exclusive --signal 440\n"
         << L"  AirPlayWin --play --exclusive --signal latency-pulse --duration 5\n"
         << L"  AirPlayWin --analyze-loopback capture.wav --reference-channel 0 --output-channel 1\n"
+        << L"  AirPlayWin --analyze-group-sync group.wav --group-channels 0,1,2,3\n"
         << L"  AirPlayWin --discover --name \"Living Room PC\" --duration 300\n"
         << L"  AirPlayWin --serve --name \"Living Room PC\" --duration 300\n";
 }
@@ -330,6 +359,34 @@ void PrintUsage() {
     }
     value = parsed;
     return true;
+}
+
+[[nodiscard]] bool ParseChannelList(const wchar_t* const text,
+                                    std::vector<std::uint16_t>& channels) {
+    if (text == nullptr || *text == L'\0') {
+        return false;
+    }
+    channels.clear();
+    const std::wstring value{text};
+    std::size_t begin = 0U;
+    while (begin < value.size()) {
+        const auto end = value.find(L',', begin);
+        const auto token = value.substr(begin, end == std::wstring::npos
+                                                   ? std::wstring::npos
+                                                   : end - begin);
+        std::uint32_t channel = 0U;
+        if (token.empty() || !ParseUnsigned(token.c_str(), channel) || channel > 7U ||
+            std::ranges::find(channels, static_cast<std::uint16_t>(channel)) !=
+                channels.end()) {
+            return false;
+        }
+        channels.push_back(static_cast<std::uint16_t>(channel));
+        if (end == std::wstring::npos) {
+            break;
+        }
+        begin = end + 1U;
+    }
+    return channels.size() >= 2U && channels.size() <= 4U;
 }
 
 [[nodiscard]] bool ParseFloat(const wchar_t* const text, float& value) {
@@ -429,6 +486,9 @@ void PrintUsage() {
         } else if (argument == L"--analyze-loopback" && index + 1 < argc) {
             command.analyze_loopback = true;
             command.loopback_capture_path = argv[++index];
+        } else if (argument == L"--analyze-group-sync" && index + 1 < argc) {
+            command.analyze_group_sync = true;
+            command.group_sync_capture_path = argv[++index];
         } else if (argument == L"--save-endpoint-offset") {
             command.save_endpoint_calibration = true;
         } else if (argument == L"--show-endpoint-offset") {
@@ -462,7 +522,7 @@ void PrintUsage() {
                 command.loopback_onset_threshold > 1.0F) {
                 return false;
             }
-            command.loopback_analysis_option_set = true;
+            command.onset_threshold_set = true;
         } else if (argument == L"--max-latency-ms" && index + 1 < argc) {
             if (!ParseUnsigned(argv[++index],
                                command.loopback_maximum_latency_milliseconds) ||
@@ -471,6 +531,27 @@ void PrintUsage() {
                 return false;
             }
             command.loopback_analysis_option_set = true;
+        } else if (argument == L"--group-channels" && index + 1 < argc) {
+            if (!ParseChannelList(argv[++index], command.group_sync_channels)) {
+                return false;
+            }
+            command.group_analysis_option_set = true;
+        } else if (argument == L"--pulse-gap-ms" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index],
+                               command.group_sync_minimum_pulse_gap_milliseconds) ||
+                command.group_sync_minimum_pulse_gap_milliseconds < 10U ||
+                command.group_sync_minimum_pulse_gap_milliseconds > 10'000U) {
+                return false;
+            }
+            command.group_analysis_option_set = true;
+        } else if (argument == L"--max-skew-ms" && index + 1 < argc) {
+            if (!ParseUnsigned(argv[++index],
+                               command.group_sync_maximum_skew_milliseconds) ||
+                command.group_sync_maximum_skew_milliseconds < 1U ||
+                command.group_sync_maximum_skew_milliseconds > 1'000U) {
+                return false;
+            }
+            command.group_analysis_option_set = true;
         } else if (argument == L"--endpoint-offset-us" && index + 1 < argc) {
             if (!ParseSignedMicroseconds(
                     argv[++index], command.endpoint_calibration_offset_microseconds)) {
@@ -537,6 +618,8 @@ void PrintUsage() {
         static_cast<unsigned>(command.save_endpoint_calibration) +
         static_cast<unsigned>(command.show_endpoint_calibration) +
         static_cast<unsigned>(command.clear_endpoint_calibration);
+    const auto analysis_commands = static_cast<unsigned>(command.analyze_loopback) +
+                                   static_cast<unsigned>(command.analyze_group_sync);
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
         (command.run_until_stopped && !command.serve) ||
         (command.experimental_buffered_timing && !command.serve) ||
@@ -544,7 +627,7 @@ void PrintUsage() {
         (command.experimental_buffered_timing && command.experimental_ptp_timing) ||
         (command.low_latency && !command.play && !command.serve) ||
         (command.strict_exclusive && !command.exclusive_audio) ||
-        calibration_commands > 1U ||
+        calibration_commands > 1U || analysis_commands > 1U ||
         (calibration_commands != 0U && command.device_id.empty()) ||
         (command.save_endpoint_calibration && !command.endpoint_calibration_offset_set) ||
         ((command.show_endpoint_calibration || command.clear_endpoint_calibration) &&
@@ -560,7 +643,7 @@ void PrintUsage() {
     }
     if (calibration_commands != 0U &&
         (command.play || command.discover || command.serve || command.list_devices ||
-         command.list_network_interfaces || command.analyze_loopback ||
+         command.list_network_interfaces || analysis_commands != 0U ||
          firewall_commands != 0U)) {
         return false;
     }
@@ -572,8 +655,15 @@ void PrintUsage() {
           command.loopback_reference_channel_set))) {
         return false;
     }
-    if (!command.analyze_loopback &&
-        command.loopback_analysis_option_set) {
+    if (command.analyze_group_sync &&
+        (command.play || command.discover || command.serve || command.list_devices ||
+         command.list_network_interfaces || firewall_commands != 0U ||
+         command.group_sync_capture_path.empty())) {
+        return false;
+    }
+    if ((!command.analyze_loopback && command.loopback_analysis_option_set) ||
+        (!command.analyze_group_sync && command.group_analysis_option_set) ||
+        (analysis_commands == 0U && command.onset_threshold_set)) {
         return false;
     }
     if (command.analyze_loopback && command.loopback_stimulus_frame.has_value() &&
@@ -766,6 +856,79 @@ void ListNetworkInterfaces(const bool include_virtual_interfaces) {
                << L", reference_peak=" << result.reference_peak
                << L", output_peak=" << result.output_peak << L"\n";
     return result.Succeeded() ? 0 : 26;
+}
+
+[[nodiscard]] int RunGroupSyncAnalysis(const CommandLine& command) {
+    airplaywin::app::WaveCapture capture;
+    std::wstring error;
+    if (!airplaywin::app::ReadWaveCapture(command.group_sync_capture_path, capture,
+                                           error)) {
+        std::wcerr << L"Group capture read failed: " << error << L".\n";
+        return 30;
+    }
+
+    auto channels = command.group_sync_channels;
+    if (channels.empty()) {
+        const auto member_count = std::min<std::uint16_t>(capture.channel_count, 4U);
+        channels.reserve(member_count);
+        for (std::uint16_t channel = 0U; channel < member_count; ++channel) {
+            channels.push_back(channel);
+        }
+    }
+
+    airplaywin::group::GroupSyncWaveformConfig config{
+        .sample_rate = capture.sample_rate,
+        .channel_count = capture.channel_count,
+        .onset_threshold = command.loopback_onset_threshold,
+        .minimum_pulse_gap_milliseconds =
+            command.group_sync_minimum_pulse_gap_milliseconds,
+        .maximum_absolute_skew_milliseconds =
+            command.group_sync_maximum_skew_milliseconds,
+    };
+    config.members.reserve(channels.size());
+    for (std::size_t index = 0U; index < channels.size(); ++index) {
+        config.members.push_back({
+            .member_id = static_cast<airplaywin::group::GroupMemberId>(index + 1U),
+            .channel = channels[index],
+        });
+    }
+    const auto result = airplaywin::group::GroupSyncAnalyzer::AnalyzeWaveform(
+        capture.interleaved_samples, config);
+    std::wcout << L"group_sync_status=" << GroupSyncStatusName(result.status)
+               << L", targets=" << (result.meets_targets ? L"pass" : L"fail")
+               << L", sample_rate=" << capture.sample_rate
+               << L", members=" << channels.size()
+               << L", pulses(reference/complete/incomplete)="
+               << result.reference_pulses << L"/" << result.complete_pulses << L"/"
+               << result.incomplete_pulses
+               << L", skew_us(p50/p95/p99/max)="
+               << result.group_skew.p50_microseconds << L"/"
+               << result.group_skew.p95_microseconds << L"/"
+               << result.group_skew.p99_microseconds << L"/"
+               << result.group_skew.maximum_microseconds
+               << L", first_alignment_us=" << result.first_alignment_microseconds
+               << L", correlation(refined/fallback)="
+               << result.correlation_refinements << L"/" << result.onset_fallbacks
+               << L"\n";
+    for (std::size_t index = 0U; index < result.members.size(); ++index) {
+        const auto& member = result.members[index];
+        std::wcout << L"  member=" << member.member_id
+                   << L", channel=" << channels[index]
+                   << L", matched=" << member.matched_pulses
+                   << L", offset_us(mean/min/max)="
+                   << member.mean_offset_microseconds << L"/"
+                   << member.minimum_offset_microseconds << L"/"
+                   << member.maximum_offset_microseconds
+                   << L", abs_offset_us(p50/p95/p99)="
+                   << member.absolute_offset.p50_microseconds << L"/"
+                   << member.absolute_offset.p95_microseconds << L"/"
+                   << member.absolute_offset.p99_microseconds
+                   << L", correlation_mean=" << member.mean_correlation << L"\n";
+    }
+    if (!result.Succeeded()) {
+        return 31;
+    }
+    return result.meets_targets ? 0 : 32;
 }
 
 [[nodiscard]] bool SubmitBlock(WindowsAudioEngine& engine,
@@ -1557,9 +1720,13 @@ int wmain(const int argc, wchar_t* argv[]) {
     if (command.analyze_loopback) {
         return RunLoopbackAnalysis(command);
     }
+    if (command.analyze_group_sync) {
+        return RunGroupSyncAnalysis(command);
+    }
     if (command.list_devices || (!command.play && !command.discover && !command.serve &&
                                  !command.list_network_interfaces &&
-                                 !command.analyze_loopback)) {
+                                 !command.analyze_loopback &&
+                                 !command.analyze_group_sync)) {
         ListDevices();
     }
     if (command.list_network_interfaces) {

@@ -84,6 +84,8 @@ void TestGroupCoordinator() {
         coordinator.Advance(first_plan->activation_remote_ptp_nanoseconds);
     APW_EXPECT(activated.size() == 2U);
     APW_EXPECT(coordinator.Diagnostics().active_members == 2U);
+    APW_EXPECT(coordinator.Diagnostics().last_join_time_microseconds == 250'000U);
+    APW_EXPECT(coordinator.Diagnostics().maximum_join_time_microseconds == 250'000U);
 
     APW_EXPECT(coordinator.UpdateMemberTiming(
                    3U, GroupMemberTimingUpdate{.clock_locked = true,
@@ -127,10 +129,14 @@ void TestGroupCoordinator() {
     APW_EXPECT(coordinator.UpdateMemberTiming(
                    2U, GroupMemberTimingUpdate{.clock_locked = true,
                                                .master_clock_identity = 99U,
-                                               .buffered_frames = 4'800U}) ==
+                                               .buffered_frames = 4'800U,
+                                               .observation_remote_ptp_nanoseconds =
+                                                   remote_base + 1'575'000'000ULL}) ==
                GroupOperationResult::Ok);
     APW_EXPECT(coordinator.Diagnostics().active_members == 1U);
     APW_EXPECT(coordinator.Diagnostics().relock_events == 1U);
+    APW_EXPECT(coordinator.Diagnostics().last_relock_time_microseconds == 75'000U);
+    APW_EXPECT(coordinator.Diagnostics().maximum_relock_time_microseconds == 75'000U);
 
     APW_EXPECT(coordinator.UpdateEndpointCalibration(
                    2U, 2'000, EndpointCalibrationSource::Manual) ==

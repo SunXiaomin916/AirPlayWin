@@ -30,6 +30,24 @@ param(
     [ValidateRange(0, 1000000)]
     [int]$DropEvery = 0,
 
+    [ValidateRange(0, 10000)]
+    [int]$BaseLatencyMilliseconds = 0,
+
+    [ValidateRange(0, 100)]
+    [int]$JitterMilliseconds = 0,
+
+    [ValidateRange(0.0, 100.0)]
+    [double]$RandomLossPercent = 0.0,
+
+    [ValidateRange(0, 1000000)]
+    [int]$BurstDropEvery = 0,
+
+    [ValidateRange(0, 1000000)]
+    [int]$BurstDropLength = 0,
+
+    [ValidateRange(0, 2147483647)]
+    [int]$Seed = 12345,
+
     [ValidateRange(0, 1000000)]
     [int]$DuplicateEvery = 0,
 
@@ -49,6 +67,12 @@ $ErrorActionPreference = "Stop"
 
 if ($RetransmitEvery -gt 0 -and $ControlPort -eq 0) {
     throw "-ControlPort is required when -RetransmitEvery is enabled."
+}
+if (($BurstDropEvery -eq 0) -ne ($BurstDropLength -eq 0)) {
+    throw "-BurstDropEvery and -BurstDropLength must be enabled together."
+}
+if ($BurstDropLength -gt $BurstDropEvery -and $BurstDropEvery -gt 0) {
+    throw "-BurstDropLength cannot exceed -BurstDropEvery."
 }
 
 function New-L16RtpPacket {
@@ -106,12 +130,36 @@ $heldPacket = $null
 $heldPort = 0
 $sentPackets = 0
 $droppedPackets = 0
+$periodicDroppedPackets = 0
+$randomDroppedPackets = 0
+$burstDroppedPackets = 0
 $duplicatedPackets = 0
 $retransmittedPackets = 0
 $packetDurationMilliseconds = 1000.0 * $FramesPerPacket / $SampleRate
+$random = [System.Random]::new($Seed)
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 try {
     for ($index = 0; $index -lt $PacketCount; ++$index) {
+        if (-not $NoPacing) {
+            $jitter = if ($JitterMilliseconds -eq 0) {
+                0
+            } else {
+                $random.Next(-$JitterMilliseconds, $JitterMilliseconds + 1)
+            }
+            $deliveryMilliseconds = [Math]::Max(
+                0.0,
+                $BaseLatencyMilliseconds + ($index * $packetDurationMilliseconds) + $jitter)
+            while ($stopwatch.Elapsed.TotalMilliseconds -lt $deliveryMilliseconds) {
+                $remaining = $deliveryMilliseconds - $stopwatch.Elapsed.TotalMilliseconds
+                if ($remaining -gt 2.0) {
+                    Start-Sleep -Milliseconds ([Math]::Max(1, [int][Math]::Floor($remaining - 1.0)))
+                } else {
+                    [System.Threading.Thread]::Yield() | Out-Null
+                }
+            }
+        }
+
         $sequence = [uint16](($StartSequence + $index) -band 0xFFFF)
         $timestamp = [uint32](
             ([uint64]$StartTimestamp + ([uint64]$index * $FramesPerPacket)) -band 0xFFFFFFFFL)
@@ -120,6 +168,20 @@ try {
 
         if ($DropEvery -gt 0 -and (($index + 1) % $DropEvery) -eq 0) {
             ++$droppedPackets
+            ++$periodicDroppedPackets
+            continue
+        }
+        $burstDrop = $BurstDropEvery -gt 0 -and
+            (($index % $BurstDropEvery) -lt $BurstDropLength)
+        if ($burstDrop) {
+            ++$droppedPackets
+            ++$burstDroppedPackets
+            continue
+        }
+        if ($RandomLossPercent -gt 0.0 -and
+            ($random.NextDouble() * 100.0) -lt $RandomLossPercent) {
+            ++$droppedPackets
+            ++$randomDroppedPackets
             continue
         }
 
@@ -149,9 +211,6 @@ try {
             $heldPacket = $null
             $heldPort = 0
         }
-        if (-not $NoPacing) {
-            Start-Sleep -Milliseconds ([Math]::Max(1, [int][Math]::Round($packetDurationMilliseconds)))
-        }
     }
     if ($null -ne $heldPacket) {
         [void]$udpClient.Send($heldPacket, $heldPacket.Length, $DestinationAddress, $heldPort)
@@ -161,4 +220,4 @@ try {
     $udpClient.Dispose()
 }
 
-Write-Output "sent=$sentPackets dropped=$droppedPackets duplicated=$duplicatedPackets retransmitted=$retransmittedPackets destination=${DestinationAddress}:$Port"
+Write-Output "sent=$sentPackets dropped=$droppedPackets periodic_drops=$periodicDroppedPackets random_drops=$randomDroppedPackets burst_drops=$burstDroppedPackets duplicated=$duplicatedPackets retransmitted=$retransmittedPackets base_latency_ms=$BaseLatencyMilliseconds jitter_ms=$JitterMilliseconds random_loss_percent=$RandomLossPercent seed=$Seed destination=${DestinationAddress}:$Port"

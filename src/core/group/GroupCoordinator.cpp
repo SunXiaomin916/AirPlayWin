@@ -87,6 +87,7 @@ GroupOperationResult GroupCoordinator::BeginSession(
     std::scoped_lock lock{mutex_};
     diagnostics_.session_active = true;
     diagnostics_.master_phase_pending = false;
+    relock_started_remote_ptp_nanoseconds_ = 0U;
     diagnostics_.session_epoch = anchor.session_epoch;
     if (anchor.master_clock_identity != 0U) {
         if (diagnostics_.active_master_clock_identity != 0U &&
@@ -130,6 +131,7 @@ GroupOperationResult GroupCoordinator::ChangeMaster(
     }
     diagnostics_.active_master_clock_identity = master_clock_identity;
     diagnostics_.master_phase_pending = diagnostics_.session_active;
+    relock_started_remote_ptp_nanoseconds_ = 0U;
     ++diagnostics_.master_change_events;
     for (auto& [id, member] : members_) {
         static_cast<void>(id);
@@ -163,6 +165,7 @@ GroupOperationResult GroupCoordinator::UpdateMasterPhase(
         return GroupOperationResult::TimelineUnavailable;
     }
     diagnostics_.master_phase_pending = false;
+    relock_started_remote_ptp_nanoseconds_ = anchor.remote_ptp_nanoseconds;
     return GroupOperationResult::Ok;
 }
 
@@ -211,6 +214,17 @@ GroupOperationResult GroupCoordinator::UpdateMemberTiming(
         member.was_active_before_holdover = false;
         SetStateLocked(member, GroupMemberState::Active);
         ++diagnostics_.relock_events;
+        if (relock_started_remote_ptp_nanoseconds_ != 0U &&
+            update.observation_remote_ptp_nanoseconds >=
+                relock_started_remote_ptp_nanoseconds_) {
+            const auto duration =
+                (update.observation_remote_ptp_nanoseconds -
+                 relock_started_remote_ptp_nanoseconds_) /
+                1'000U;
+            diagnostics_.last_relock_time_microseconds = duration;
+            diagnostics_.maximum_relock_time_microseconds =
+                std::max(diagnostics_.maximum_relock_time_microseconds, duration);
+        }
     } else if (diagnostics_.session_active &&
                member.state != GroupMemberState::Active &&
                member.state != GroupMemberState::MutedReady) {
@@ -256,6 +270,17 @@ std::vector<GroupMemberAction> GroupCoordinator::Advance(
             remote_now_nanoseconds >= member.activation_remote_ptp_nanoseconds) {
             SetStateLocked(member, GroupMemberState::Active);
             ++diagnostics_.join_activations;
+            if (member.join_started_remote_ptp_nanoseconds != 0U &&
+                remote_now_nanoseconds >=
+                    member.join_started_remote_ptp_nanoseconds) {
+                const auto duration =
+                    (remote_now_nanoseconds -
+                     member.join_started_remote_ptp_nanoseconds) /
+                    1'000U;
+                diagnostics_.last_join_time_microseconds = duration;
+                diagnostics_.maximum_join_time_microseconds =
+                    std::max(diagnostics_.maximum_join_time_microseconds, duration);
+            }
             actions.push_back({.member_id = id,
                                .type = GroupMemberActionType::RampIn,
                                .session_epoch = diagnostics_.session_epoch,
@@ -457,6 +482,7 @@ std::optional<GroupJoinPlan> GroupCoordinator::BuildJoinPlanLocked(
     }
     member.activation_remote_ptp_nanoseconds =
         timeline.anchor.remote_ptp_nanoseconds + activation_delta;
+    member.join_started_remote_ptp_nanoseconds = remote_now_nanoseconds;
     member.activation_rtp_timestamp = timeline.anchor.rtp_timestamp +
                                       static_cast<std::uint32_t>(aligned_frames);
     member.runtime->activation_remote_ptp_nanoseconds_.store(

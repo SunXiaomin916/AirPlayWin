@@ -1,5 +1,7 @@
+#include <array>
 #include <exception>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 void TestAudioEngine();
@@ -16,8 +18,11 @@ void TestEndpointLatencyModel();
 void TestEndpointCalibrationStore();
 void TestGroupCoordinator();
 void TestGroupMemberAudioGate();
+void TestGroupSyncAnalyzer();
+void TestGroupSoakRegression();
 void TestGroupTimeline();
 void TestLoopbackLatency();
+void TestNetworkFaultInjector();
 void TestDiscovery();
 void TestDriftResampler();
 void TestIocpTcpServer();
@@ -45,6 +50,55 @@ namespace {
 
 using TestFunction = void (*)();
 
+struct TestCase final {
+    std::string_view name{};
+    TestFunction function{nullptr};
+};
+
+constexpr std::array<TestCase, 41U> kTests{{
+    {"AdaptiveJitterBuffer", &TestAdaptiveJitterBuffer},
+    {"AntiPopStress", &TestAntiPopStress},
+    {"AudioEpoch", &TestAudioEpoch},
+    {"AudioRingBuffer", &TestAudioRingBuffer},
+    {"AudioTransitionGuard", &TestAudioTransitionGuard},
+    {"BufferedTiming", &TestBufferedTiming},
+    {"ClickPopDetector", &TestClickPopDetector},
+    {"ClockServo", &TestClockServo},
+    {"EndpointLatencyModel", &TestEndpointLatencyModel},
+    {"EndpointCalibrationStore", &TestEndpointCalibrationStore},
+    {"GroupCoordinator", &TestGroupCoordinator},
+    {"GroupMemberAudioGate", &TestGroupMemberAudioGate},
+    {"GroupSyncAnalyzer", &TestGroupSyncAnalyzer},
+    {"GroupSoakRegression", &TestGroupSoakRegression},
+    {"GroupTimeline", &TestGroupTimeline},
+    {"LoopbackLatency", &TestLoopbackLatency},
+    {"TestSignalGenerator", &TestSignalGenerator},
+    {"AudioEngine", &TestAudioEngine},
+    {"PcmL16Decoder", &TestPcmL16Decoder},
+    {"PtpTiming", &TestPtpTiming},
+    {"Recovery", &TestRecovery},
+    {"RtpPacket", &TestRtpPacket},
+    {"RtpJitterBuffer", &TestRtpJitterBuffer},
+    {"RtpAudioStream", &TestRtpAudioStream},
+    {"RtpTransportIntegration", &TestRtpTransportIntegration},
+    {"RtspParser", &TestRtspParser},
+    {"SdpAndTransport", &TestSdpAndTransport},
+    {"SessionManager", &TestSessionManager},
+    {"AirPlayControlService", &TestAirPlayControlService},
+    {"IocpTcpServer", &TestIocpTcpServer},
+    {"IocpUdpReceiver", &TestIocpUdpReceiver},
+    {"Discovery", &TestDiscovery},
+    {"DriftResampler", &TestDriftResampler},
+    {"NetworkFaultInjector", &TestNetworkFaultInjector},
+    {"WindowsDiscovery", &TestWindowsDiscovery},
+    {"WindowsEndpointCalibrationStore", &TestWindowsEndpointCalibrationStore},
+    {"WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration},
+    {"WindowsPlatform", &TestWindowsPlatform},
+    {"WindowsPtpTimingService", &TestWindowsPtpTimingService},
+    {"WindowsRecovery", &TestWindowsRecovery},
+    {"WaveFileReader", &TestWaveFileReader},
+}};
+
 [[nodiscard]] bool Run(const std::string_view name, const TestFunction function) {
     try {
         function();
@@ -61,46 +115,24 @@ using TestFunction = void (*)();
 
 }  // namespace
 
-int main() {
+int main(const int argc, char* argv[]) {
+    if (argc == 3 && std::string_view{argv[1]} == "--only") {
+        const std::string_view requested{argv[2]};
+        for (const auto& test : kTests) {
+            if (test.name == requested) {
+                return Run(test.name, test.function) ? 0 : 1;
+            }
+        }
+        std::cerr << "Unknown test module: " << requested << '\n';
+        return 2;
+    }
+    if (argc != 1) {
+        std::cerr << "Usage: airplaywin_tests [--only <module>]\n";
+        return 2;
+    }
     int failed = 0;
-    failed += Run("AdaptiveJitterBuffer", &TestAdaptiveJitterBuffer) ? 0 : 1;
-    failed += Run("AntiPopStress", &TestAntiPopStress) ? 0 : 1;
-    failed += Run("AudioEpoch", &TestAudioEpoch) ? 0 : 1;
-    failed += Run("AudioRingBuffer", &TestAudioRingBuffer) ? 0 : 1;
-    failed += Run("AudioTransitionGuard", &TestAudioTransitionGuard) ? 0 : 1;
-    failed += Run("BufferedTiming", &TestBufferedTiming) ? 0 : 1;
-    failed += Run("ClickPopDetector", &TestClickPopDetector) ? 0 : 1;
-    failed += Run("ClockServo", &TestClockServo) ? 0 : 1;
-    failed += Run("EndpointLatencyModel", &TestEndpointLatencyModel) ? 0 : 1;
-    failed += Run("EndpointCalibrationStore", &TestEndpointCalibrationStore) ? 0 : 1;
-    failed += Run("GroupCoordinator", &TestGroupCoordinator) ? 0 : 1;
-    failed += Run("GroupMemberAudioGate", &TestGroupMemberAudioGate) ? 0 : 1;
-    failed += Run("GroupTimeline", &TestGroupTimeline) ? 0 : 1;
-    failed += Run("LoopbackLatency", &TestLoopbackLatency) ? 0 : 1;
-    failed += Run("TestSignalGenerator", &TestSignalGenerator) ? 0 : 1;
-    failed += Run("AudioEngine", &TestAudioEngine) ? 0 : 1;
-    failed += Run("PcmL16Decoder", &TestPcmL16Decoder) ? 0 : 1;
-    failed += Run("PtpTiming", &TestPtpTiming) ? 0 : 1;
-    failed += Run("Recovery", &TestRecovery) ? 0 : 1;
-    failed += Run("RtpPacket", &TestRtpPacket) ? 0 : 1;
-    failed += Run("RtpJitterBuffer", &TestRtpJitterBuffer) ? 0 : 1;
-    failed += Run("RtpAudioStream", &TestRtpAudioStream) ? 0 : 1;
-    failed += Run("RtpTransportIntegration", &TestRtpTransportIntegration) ? 0 : 1;
-    failed += Run("RtspParser", &TestRtspParser) ? 0 : 1;
-    failed += Run("SdpAndTransport", &TestSdpAndTransport) ? 0 : 1;
-    failed += Run("SessionManager", &TestSessionManager) ? 0 : 1;
-    failed += Run("AirPlayControlService", &TestAirPlayControlService) ? 0 : 1;
-    failed += Run("IocpTcpServer", &TestIocpTcpServer) ? 0 : 1;
-    failed += Run("IocpUdpReceiver", &TestIocpUdpReceiver) ? 0 : 1;
-    failed += Run("Discovery", &TestDiscovery) ? 0 : 1;
-    failed += Run("DriftResampler", &TestDriftResampler) ? 0 : 1;
-    failed += Run("WindowsDiscovery", &TestWindowsDiscovery) ? 0 : 1;
-    failed += Run("WindowsEndpointCalibrationStore",
-                  &TestWindowsEndpointCalibrationStore) ? 0 : 1;
-    failed += Run("WindowsAudioStreamIntegration", &TestWindowsAudioStreamIntegration) ? 0 : 1;
-    failed += Run("WindowsPlatform", &TestWindowsPlatform) ? 0 : 1;
-    failed += Run("WindowsPtpTimingService", &TestWindowsPtpTimingService) ? 0 : 1;
-    failed += Run("WindowsRecovery", &TestWindowsRecovery) ? 0 : 1;
-    failed += Run("WaveFileReader", &TestWaveFileReader) ? 0 : 1;
+    for (const auto& test : kTests) {
+        failed += Run(test.name, test.function) ? 0 : 1;
+    }
     return failed == 0 ? 0 : 1;
 }

@@ -18,6 +18,18 @@ Deterministic fault cases can be combined:
     -DuplicateEvery 40 -ReorderPairs
 ```
 
+Phase 12 also supports a fixed-seed network profile with scheduled base latency, bounded jitter,
+random loss, and burst loss:
+
+```powershell
+.\tools\packet_replay\rtp_l16_replay.ps1 -Port 54321 -PacketCount 10000 `
+    -BaseLatencyMilliseconds 50 -JitterMilliseconds 100 `
+    -RandomLossPercent 2.0 -BurstDropEvery 500 -BurstDropLength 5 -Seed 20260926
+```
+
+The reported counters distinguish periodic, random, and burst drops. Jitter affects scheduled
+delivery only when pacing is enabled; `-NoPacing` intentionally bypasses all delay scheduling.
+
 The receiver diagnostics should reflect the injected loss, duplicates, and reordering while
 the decoder worker continues to emit a contiguous float32 frame sequence. `-NoPacing` is
 useful for queue stress; normal runs pace packets at `FramesPerPacket / SampleRate`.

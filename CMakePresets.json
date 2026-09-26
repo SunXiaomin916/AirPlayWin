@@ -45,6 +45,20 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "ci-regression",
+      "displayName": "Phase 12 synchronization, anti-pop, and latency regressions",
+      "configurePreset": "vs2022-x64",
+      "configuration": "Release",
+      "filter": {
+        "include": {
+          "label": "ci"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

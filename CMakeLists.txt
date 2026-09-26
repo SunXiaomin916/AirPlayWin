@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.11.0 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.12.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -27,6 +27,7 @@ add_library(airplaywin_core STATIC
     src/core/group/EndpointCalibrationStore.cpp
     src/core/group/GroupCoordinator.cpp
     src/core/group/GroupMemberAudioGate.cpp
+    src/core/group/GroupSyncAnalyzer.cpp
     src/core/group/GroupTypes.cpp
     src/core/lifecycle/RecoveryCoordinator.cpp
     src/core/protocol/AirPlayControlService.cpp
@@ -45,6 +46,7 @@ add_library(airplaywin_core STATIC
     src/core/timing/RtpPtpPhaseTimeline.cpp
     src/core/transport/RtpAudioStream.cpp
     src/core/transport/RtpJitterBuffer.cpp
+    src/core/transport/NetworkFaultInjector.cpp
     src/core/transport/RtpPacket.cpp
 )
 
@@ -92,11 +94,22 @@ airplaywin_set_warnings(AirPlayWin)
 if(AIRPLAYWIN_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+    install(TARGETS airplaywin_tests RUNTIME DESTINATION tools)
 endif()
 
 install(TARGETS AirPlayWin RUNTIME DESTINATION bin)
 install(FILES README.md DESTINATION .)
 install(DIRECTORY installer/ DESTINATION installer)
+install(FILES
+    tools/Run-S12Regression.ps1
+    DESTINATION tools
+)
+install(FILES
+    tools/packet_replay/rtp_l16_replay.ps1
+    tools/packet_replay/README.md
+    DESTINATION tools/packet_replay
+)
+install(FILES docs/phase-12.md DESTINATION docs)
 
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_NAME "AirPlayWin")

@@ -34,6 +34,12 @@ Phase 11 keeps its repeatable group/member/phase tests in the native suite. The 
 Windows endpoint. These commands manage calibration data; they do not perform a physical
 measurement or claim group skew acceptance.
 
+Phase 12 adds `--analyze-group-sync` for 2–4 channel synchronized WAVE captures. It prints group
+skew p50/p95/p99/max and per-channel offsets, and fails the process when the configured acceptance
+targets are missed. `Run-S12Regression.ps1` repeats either the complete suite or the accelerated
+group-clock simulation by count or real elapsed hours and emits JSON. A duration run is a
+software soak, not evidence of acoustic endpoint skew.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
 injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not
 pretend that QPC-only timing measures driver/DAC/analog latency; capture routing remains a

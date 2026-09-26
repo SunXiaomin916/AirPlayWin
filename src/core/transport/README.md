@@ -42,3 +42,8 @@ Phase 11 can additionally supply `RtpPtpPhaseTimeline`. In that mode an RTP fram
 through the shared remote PTP phase and clock domain; an unavailable or master-mismatched phase
 increments `timing_unmapped_dropped_frames` and the PCM is discarded. There is no fallback to a
 receiver-local anchor. Multi-member policy remains in `GroupCoordinator`, outside transport.
+
+Phase 12 adds `NetworkFaultInjector` as a deterministic test utility. A fixed seed produces
+bounded delivery delay, random/burst loss, duplication, and reordering decisions with counters.
+It is intentionally not wired into production packet receipt: test harnesses and replay tools
+apply faults before the normal RTP parser/jitter-buffer boundary.

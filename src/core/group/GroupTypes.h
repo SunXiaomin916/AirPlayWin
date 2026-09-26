@@ -77,6 +77,7 @@ struct GroupMemberTimingUpdate final {
     std::uint64_t master_clock_identity{0U};
     std::uint64_t buffered_frames{0U};
     std::uint64_t uncertainty_microseconds{0U};
+    std::uint64_t observation_remote_ptp_nanoseconds{0U};
 };
 
 struct GroupJoinPlan final {

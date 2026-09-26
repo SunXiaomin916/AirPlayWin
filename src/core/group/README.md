@@ -35,6 +35,8 @@ adapter stores signed offsets under the current user's registry hive and verifie
 endpoint ID in every hashed record. The source is retained as manual or measured so a later
 automatic measurement workflow can use the same interface.
 
-The coordinator deliberately does not implement an inter-host group-control protocol or a
-skew analyzer. Those are integration and S12 responsibilities; the S11 core exposes snapshots
-and counters needed by them.
+The coordinator deliberately does not implement an inter-host group-control protocol. Phase 12
+adds a separate offline `GroupSyncAnalyzer`: it consumes 2–4 channel pulse captures or
+presentation timestamps, refines waveform offsets with normalized cross-correlation, and reports
+group skew p50/p95/p99 plus per-member statistics. Keeping measurement outside the coordinator
+prevents file parsing and analysis allocation from entering the realtime audio path.
