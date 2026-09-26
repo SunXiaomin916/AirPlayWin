@@ -1,5 +1,7 @@
 # AirPlayWin 1.0
 
+**English** | [简体中文](README.zh-CN.md)
+
 AirPlayWin is a Windows 11 x64 Classic AirPlay/RAOP audio receiver. iPhone, iPad, and Mac senders
 can discover the computer as a speaker and play Apple Lossless or L16 audio through the default
 Windows output or a selected endpoint. The supported v1.0 profile includes legacy RSA-AES,
