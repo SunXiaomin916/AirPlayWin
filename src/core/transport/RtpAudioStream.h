@@ -10,6 +10,7 @@
 
 #include "core/audio/IAudioDecoder.h"
 #include "core/audio/IAudioFrameSink.h"
+#include "core/audio/DriftResampler.h"
 #include "core/timing/ITimingEngine.h"
 #include "core/transport/IAudioStream.h"
 #include "core/transport/RtpJitterBuffer.h"
@@ -63,6 +64,8 @@ private:
     std::unique_ptr<timing::ITimingEngine> timing_engine_{};
     RtpJitterBuffer jitter_buffer_;
     std::vector<float> decode_storage_{};
+    std::vector<float> resample_storage_{};
+    audio::DriftResampler drift_resampler_{};
     mutable std::mutex state_mutex_{};
     std::mutex processing_mutex_{};
     mutable std::mutex timeline_mutex_{};
@@ -89,6 +92,11 @@ private:
     std::atomic<std::uint64_t> decoded_frames_{0U};
     std::atomic<std::uint64_t> concealed_packets_{0U};
     std::atomic<std::uint64_t> concealed_frames_{0U};
+    std::atomic<std::uint64_t> resampled_input_frames_{0U};
+    std::atomic<std::uint64_t> resampled_output_frames_{0U};
+    std::atomic<std::uint64_t> drift_inserted_frames_{0U};
+    std::atomic<std::uint64_t> drift_dropped_frames_{0U};
+    std::atomic<std::uint64_t> timing_hard_resync_requests_{0U};
     std::atomic<std::uint64_t> packet_processing_average_microseconds_{0U};
     std::atomic<std::uint64_t> packet_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decoder_errors_{0U};

@@ -29,6 +29,7 @@
 #include "core/discovery/AirPlayServiceRecords.h"
 #include "core/lifecycle/RecoveryCoordinator.h"
 #include "core/protocol/AirPlayControlService.h"
+#include "core/timing/PtpClockDomain.h"
 #include "platform/windows/audio/WindowsAudioDeviceEnumerator.h"
 #include "platform/windows/audio/WindowsAudioEngine.h"
 #include "platform/windows/audio/WindowsAudioStreamSink.h"
@@ -40,6 +41,7 @@
 #include "platform/windows/system/WindowsFirewallManager.h"
 #include "platform/windows/system/WindowsPowerEventMonitor.h"
 #include "platform/windows/timing/QpcClock.h"
+#include "platform/windows/timing/WindowsPtpTimingService.h"
 #include "app/WaveFileReader.h"
 
 namespace {
@@ -64,6 +66,7 @@ using airplaywin::windows::system::SingleInstanceGuard;
 using airplaywin::windows::system::WindowsFirewallManager;
 using airplaywin::windows::system::WindowsPowerEventMonitor;
 using airplaywin::windows::timing::QpcClock;
+using airplaywin::windows::timing::WindowsPtpTimingService;
 
 [[nodiscard]] std::wstring_view TransitionStateName(
     const AudioTransitionState state) noexcept {
@@ -116,6 +119,26 @@ using airplaywin::windows::timing::QpcClock;
         return L"degraded";
     case AdaptiveJitterState::Recovery:
         return L"recovery";
+    }
+    return L"unknown";
+}
+
+[[nodiscard]] std::wstring_view ClockServoStateName(
+    const airplaywin::timing::ClockServoState state) noexcept {
+    using airplaywin::timing::ClockServoState;
+    switch (state) {
+    case ClockServoState::Disabled:
+        return L"disabled";
+    case ClockServoState::Unlocked:
+        return L"unlocked";
+    case ClockServoState::Acquiring:
+        return L"acquiring";
+    case ClockServoState::Locked:
+        return L"locked";
+    case ClockServoState::Holdover:
+        return L"holdover";
+    case ClockServoState::Relocking:
+        return L"relocking";
     }
     return L"unknown";
 }
@@ -185,11 +208,13 @@ struct CommandLine final {
     bool lifecycle_smoke{false};
     bool run_until_stopped{false};
     bool experimental_buffered_timing{false};
+    bool experimental_ptp_timing{false};
     bool low_latency{false};
     bool exclusive_audio{false};
     bool strict_exclusive{false};
     bool analyze_loopback{false};
     std::uint32_t buffered_timing_milliseconds{120U};
+    std::string ptp_interface_address{"0.0.0.0"};
     std::filesystem::path loopback_capture_path{};
     std::uint32_t loopback_reference_channel{0U};
     std::uint32_t loopback_output_channel{1U};
@@ -215,7 +240,7 @@ struct CommandLine final {
 
 void PrintUsage() {
     std::wcout
-        << L"AirPlayWin phase-9 low-latency validation\n\n"
+        << L"AirPlayWin phase-10 timing validation\n\n"
         << L"  AirPlayWin --help\n"
         << L"  AirPlayWin --list-devices\n"
         << L"  AirPlayWin --list-network-interfaces [--include-virtual-interfaces]\n"
@@ -236,6 +261,7 @@ void PrintUsage() {
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
         << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
         << L"             [--experimental-buffered-timing [--buffered-timing-ms <20..2000>]]\n"
+        << L"             [--experimental-ptp-timing [--ptp-interface <IPv4>]]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --analyze-loopback <capture.wav>\n"
         << L"             [--reference-channel <index> --output-channel <index>]\n"
@@ -365,6 +391,22 @@ void PrintUsage() {
             command.run_until_stopped = true;
         } else if (argument == L"--experimental-buffered-timing") {
             command.experimental_buffered_timing = true;
+        } else if (argument == L"--experimental-ptp-timing") {
+            command.experimental_ptp_timing = true;
+        } else if (argument == L"--ptp-interface" && index + 1 < argc) {
+            const std::wstring value{argv[++index]};
+            if (value.empty() || value.size() > 15U ||
+                !std::all_of(value.begin(), value.end(), [](const wchar_t character) {
+                    return (character >= L'0' && character <= L'9') || character == L'.';
+                })) {
+                return false;
+            }
+            command.ptp_interface_address.clear();
+            command.ptp_interface_address.reserve(value.size());
+            for (const auto character : value) {
+                command.ptp_interface_address.push_back(static_cast<char>(character));
+            }
+            command.experimental_ptp_timing = true;
         } else if (argument == L"--low-latency") {
             command.low_latency = true;
         } else if (argument == L"--exclusive") {
@@ -477,6 +519,8 @@ void PrintUsage() {
     if (firewall_commands > 1U || (command.lifecycle_smoke && !command.serve) ||
         (command.run_until_stopped && !command.serve) ||
         (command.experimental_buffered_timing && !command.serve) ||
+        (command.experimental_ptp_timing && !command.serve) ||
+        (command.experimental_buffered_timing && command.experimental_ptp_timing) ||
         (command.low_latency && !command.play && !command.serve) ||
         (command.strict_exclusive && !command.exclusive_audio)) {
         return false;
@@ -969,6 +1013,13 @@ void PrintControlDiagnostics(
                << L", stale_timeline=" << transport.timeline_rejected_packets
                << L", decoded=" << transport.decoded_packets
                << L", concealed=" << transport.concealed_packets
+               << L", resample(in/out/insert/drop)="
+               << transport.resampled_input_frames << L"/"
+               << transport.resampled_output_frames << L"/"
+               << transport.drift_inserted_frames << L"/"
+               << transport.drift_dropped_frames
+               << L", timing_hard_resync="
+               << transport.timing_hard_resync_requests
                << L", lost=" << transport.jitter_buffer.lost_packets
                << L", late=" << transport.jitter_buffer.late_packets
                << L", duplicate=" << transport.jitter_buffer.duplicate_packets
@@ -1030,6 +1081,26 @@ void PrintControlDiagnostics(
                << L", anchor_target_qpc=" << transport.timing.anchor_target_qpc
                << L", last_remote=" << transport.timing.last_remote_time
                << L", last_target_qpc=" << transport.timing.last_target_qpc
+               << L", servo_state="
+               << ClockServoStateName(transport.timing.servo.state)
+               << L", master=0x" << std::hex
+               << transport.timing.servo.source_clock_identity << std::dec
+               << L", offset_us=" << transport.timing.servo.offset_microseconds
+               << L", drift_ppm=" << transport.timing.servo.drift_ppm
+               << L", correction=" << transport.timing.servo.rate_correction
+               << L", rtt_us=" << transport.timing.servo.rtt_microseconds
+               << L", uncertainty_us="
+               << transport.timing.servo.uncertainty_microseconds
+               << L", sync_age_us="
+               << transport.timing.servo.last_sync_age_microseconds
+               << L", samples(ok/reject/outlier)="
+               << transport.timing.servo.accepted_samples << L"/"
+               << transport.timing.servo.rejected_samples << L"/"
+               << transport.timing.servo.outlier_samples
+               << L", holdover/relock/resync="
+               << transport.timing.servo.holdover_events << L"/"
+               << transport.timing.servo.relock_events << L"/"
+               << transport.timing.servo.hard_resync_events
                << L", error=" << transport.timing.last_error
                << L"\n"
                << L"  audio: configured=" << (audio.configured ? L"yes" : L"no")
@@ -1084,6 +1155,40 @@ void PrintControlDiagnostics(
                << std::flush;
 }
 
+void PrintPtpDiagnostics(
+    const airplaywin::windows::timing::WindowsPtpTimingServiceDiagnostics& diagnostics) {
+    const auto& clock = diagnostics.clock;
+    const auto& servo = clock.servo;
+    const std::wstring multicast_interface{diagnostics.multicast_interface_address.begin(),
+                                           diagnostics.multicast_interface_address.end()};
+    std::wcout << L"  PTP: running=" << (diagnostics.running ? L"yes" : L"no")
+               << L", ports=" << diagnostics.event_port << L"/"
+               << diagnostics.general_port
+               << L", multicast="
+               << (diagnostics.multicast_joined ? L"joined" : L"not-joined")
+               << L", interface=" << multicast_interface
+               << L", datagrams(event/general)=" << diagnostics.event_datagrams << L"/"
+               << diagnostics.general_datagrams
+               << L", messages(sync/follow/announce/invalid)="
+               << clock.sync_messages << L"/" << clock.follow_up_messages << L"/"
+               << clock.announce_messages << L"/" << clock.invalid_datagrams
+               << L", domain=" << static_cast<unsigned>(clock.domain_number)
+               << L", state=" << ClockServoStateName(servo.state)
+               << L", master=0x" << std::hex << servo.source_clock_identity << std::dec
+               << L", samples(ok/reject/outlier)=" << servo.accepted_samples << L"/"
+               << servo.rejected_samples << L"/" << servo.outlier_samples
+               << L", offset_us=" << servo.offset_microseconds
+               << L", drift_ppm=" << servo.drift_ppm
+               << L", correction=" << servo.rate_correction
+               << L", uncertainty_us=" << servo.uncertainty_microseconds
+               << L", sync_age_us=" << servo.last_sync_age_microseconds
+               << L", holdover/relock/resync=" << servo.holdover_events << L"/"
+               << servo.relock_events << L"/" << servo.hard_resync_events
+               << L", receive_errors=" << diagnostics.receive_errors
+               << L", error=0x" << std::hex << diagnostics.last_error << std::dec
+               << L"\n" << std::flush;
+}
+
 void PrintRecoveryDiagnostics(
     const airplaywin::lifecycle::RecoveryDiagnostics& recovery,
     const airplaywin::windows::system::PowerEventDiagnostics& power) {
@@ -1119,11 +1224,22 @@ void PrintRecoveryDiagnostics(
             command.endpoint_calibration_offset_microseconds,
     }, command.exclusive_audio ? 10U : (command.low_latency ? 5U : 20U),
        command.low_latency ? 15U : 30U};
+    std::shared_ptr<airplaywin::timing::PtpClockDomain> ptp_clock_domain;
+    std::unique_ptr<WindowsPtpTimingService> ptp_service;
+    if (command.experimental_ptp_timing) {
+        ptp_clock_domain = std::make_shared<airplaywin::timing::PtpClockDomain>(
+            airplaywin::timing::ClockServoConfig{
+                .local_clock_frequency = QpcClock::Frequency(),
+            });
+        ptp_service = std::make_unique<WindowsPtpTimingService>(ptp_clock_domain);
+    }
     WindowsRtpTransportController media_transport{
         audio_sink,
         {.enable_adaptive_jitter = command.low_latency,
          .enable_buffered_timing = command.experimental_buffered_timing,
-         .buffered_timing_milliseconds = command.buffered_timing_milliseconds}};
+         .enable_ptp_timing = command.experimental_ptp_timing,
+         .buffered_timing_milliseconds = command.buffered_timing_milliseconds,
+         .ptp_clock_domain = ptp_clock_domain}};
     airplaywin::protocol::AirPlayControlService control{
         authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
         airplaywin::protocol::ParserLimits{}, &media_transport};
@@ -1146,19 +1262,36 @@ void PrintRecoveryDiagnostics(
         discovery.Stop();
         airplay_server.Stop();
         raop_server.Stop();
+        if (ptp_service) {
+            ptp_service->Stop();
+        }
     };
     auto start_services = [&]() -> int {
+        if (ptp_service && !ptp_service->Start({
+                               .multicast_interface_address =
+                                   command.ptp_interface_address})) {
+            return 25;
+        }
         if (!raop_server.Start({.bind_address = "0.0.0.0", .port = command.raop_port})) {
+            if (ptp_service) {
+                ptp_service->Stop();
+            }
             return 16;
         }
         if (!airplay_server.Start(
                 {.bind_address = "0.0.0.0", .port = command.airplay_port})) {
             raop_server.Stop();
+            if (ptp_service) {
+                ptp_service->Stop();
+            }
             return 17;
         }
         if (!discovery.Start(discovery_config)) {
             airplay_server.Stop();
             raop_server.Stop();
+            if (ptp_service) {
+                ptp_service->Stop();
+            }
             return 18;
         }
         return 0;
@@ -1167,7 +1300,10 @@ void PrintRecoveryDiagnostics(
         const auto discovery_error = discovery.Diagnostics().last_error;
         const auto airplay_error = airplay_server.Diagnostics().last_error;
         const auto raop_error = raop_server.Diagnostics().last_error;
-        return discovery_error != 0U
+        const auto ptp_error = ptp_service ? ptp_service->Diagnostics().last_error : 0U;
+        return ptp_error != 0U
+                   ? ptp_error
+                   : discovery_error != 0U
                    ? discovery_error
                    : (airplay_error != 0U ? airplay_error : raop_error);
     };
@@ -1197,7 +1333,11 @@ void PrintRecoveryDiagnostics(
                << (command.experimental_buffered_timing ? L"on" : L"off")
                << (command.experimental_buffered_timing
                        ? L" (local RTP-to-QPC anchor only; no PTP).\n"
-                       : L".\n");
+                       : L". ")
+               << L"PTP timing experiment: "
+               << (command.experimental_ptp_timing
+                       ? L"on (receive-only UDP 319/320 servo; S11 phase anchor pending).\n"
+                       : L"off.\n");
     const auto deadline =
         command.run_until_stopped
             ? std::chrono::steady_clock::time_point::max()
@@ -1252,6 +1392,9 @@ void PrintRecoveryDiagnostics(
             PrintControlDiagnostics(control.Diagnostics(), raop_server.Diagnostics(),
                                     airplay_server.Diagnostics(), audio_sink.Diagnostics());
             PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
+            if (ptp_service) {
+                PrintPtpDiagnostics(ptp_service->Diagnostics());
+            }
             next_diagnostics += interval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -1263,6 +1406,9 @@ void PrintRecoveryDiagnostics(
     PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics,
                             audio_sink.Diagnostics());
     PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
+    if (ptp_service) {
+        PrintPtpDiagnostics(ptp_service->Diagnostics());
+    }
     recovery.Stop();
     power_monitor.Stop();
     if (services_running) {

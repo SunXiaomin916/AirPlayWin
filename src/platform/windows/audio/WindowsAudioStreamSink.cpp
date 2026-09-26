@@ -176,6 +176,20 @@ void WindowsAudioStreamSink::Flush() noexcept {
     prefilled_frames_ = 0U;
 }
 
+void WindowsAudioStreamSink::HardResync() noexcept {
+    std::scoped_lock lock{mutex_};
+    if (!configured_) {
+        return;
+    }
+    schedule_generation_.fetch_add(1U, std::memory_order_acq_rel);
+    if (started_) {
+        engine_.Pause();
+        resume_after_prefill_ = true;
+    }
+    engine_.HardResync();
+    prefilled_frames_ = 0U;
+}
+
 void WindowsAudioStreamSink::SetVolume(const float linear_gain) noexcept {
     std::scoped_lock lock{mutex_};
     if (configured_) {

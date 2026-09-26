@@ -9,13 +9,16 @@ add_executable(airplaywin_tests
     TestAudioTransitionGuard.cpp
     TestBufferedTiming.cpp
     TestClickPopDetector.cpp
+    TestClockServo.cpp
     TestEndpointLatencyModel.cpp
     TestLoopbackLatency.cpp
     TestAirPlayControlService.cpp
     TestDiscovery.cpp
+    TestDriftResampler.cpp
     TestIocpTcpServer.cpp
     TestIocpUdpReceiver.cpp
     TestPcmL16Decoder.cpp
+    TestPtpTiming.cpp
     TestRecovery.cpp
     TestRtpAudioStream.cpp
     TestRtpJitterBuffer.cpp
@@ -28,6 +31,7 @@ add_executable(airplaywin_tests
     TestWindowsDiscovery.cpp
     TestWindowsAudioStreamIntegration.cpp
     TestWindowsPlatform.cpp
+    TestWindowsPtpTimingService.cpp
     TestWindowsRecovery.cpp
     TestWaveFileReader.cpp
 )

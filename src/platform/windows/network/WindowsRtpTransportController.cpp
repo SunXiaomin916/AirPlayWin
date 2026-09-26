@@ -8,6 +8,7 @@
 
 #include "core/audio/PcmL16Decoder.h"
 #include "core/timing/BufferedRtpTimingEngine.h"
+#include "core/timing/DisciplinedRtpTimingEngine.h"
 #include "core/transport/RtpAudioStream.h"
 #include "platform/windows/timing/QpcClock.h"
 
@@ -40,7 +41,9 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     if (request.connection_id == 0U || !request.format.IsValid() ||
         request.format.codec != airplaywin::audio::AudioCodec::PcmL16BigEndian ||
         !jitter_config.IsValid() ||
-        (options_.enable_buffered_timing &&
+        (options_.enable_buffered_timing && options_.enable_ptp_timing) ||
+        (options_.enable_ptp_timing && !options_.ptp_clock_domain) ||
+        ((options_.enable_buffered_timing || options_.enable_ptp_timing) &&
          (options_.buffered_timing_milliseconds < 20U ||
           options_.buffered_timing_milliseconds > 2'000U))) {
         return {.error = AudioTransportSetupError::InvalidRequest};
@@ -57,7 +60,17 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     }
 
     std::unique_ptr<airplaywin::timing::ITimingEngine> timing_engine;
-    if (options_.enable_buffered_timing) {
+    if (options_.enable_ptp_timing) {
+        timing_engine =
+            std::make_unique<airplaywin::timing::DisciplinedRtpTimingEngine>(
+                airplaywin::timing::DisciplinedRtpTimingConfig{
+                    .remote_clock_rate = request.format.sample_rate,
+                    .target_buffer_milliseconds =
+                        options_.buffered_timing_milliseconds,
+                },
+                options_.ptp_clock_domain,
+                std::make_unique<airplaywin::windows::timing::QpcClockSource>());
+    } else if (options_.enable_buffered_timing) {
         timing_engine = std::make_unique<airplaywin::timing::BufferedRtpTimingEngine>(
             airplaywin::timing::BufferedRtpTimingConfig{
                 .remote_clock_rate = request.format.sample_rate,

@@ -32,3 +32,10 @@ jitter/scheduled/output receiver-path estimate are diagnostics only and never al
 timestamps. The classic protocol-declared latency is transported and reported separately from
 that receiver-path estimate. All storage, including the 128-sample jitter percentile window, is
 fixed.
+
+Phase 10 can inject `DisciplinedRtpTimingEngine` instead of the phase 7 local buffered engine.
+The stream consumes its bounded rate correction through a preallocated `DriftResampler`, counts
+inserted/dropped correction frames, and converts a pending clock discontinuity into
+`IAudioFrameSink::HardResync`. The Windows sink then creates a new audio epoch and uses the
+mandatory hard-resync fade sequence. The transport never calls WASAPI directly. Absolute
+RTP-to-PTP phase alignment and multi-receiver group coordination remain outside this phase.

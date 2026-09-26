@@ -1,14 +1,16 @@
 # AirPlayWin
 
-AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 9
+AirPlayWin is a Windows-native AirPlay/AirPlay 2 audio receiver project. Phases 1 through 10
 provide the standalone WASAPI audio engine, native AirPlay/RAOP discovery, defensive RTSP/HTTP
 control sessions, a runnable unencrypted RTP/L16 transport, and sender-control-to-AudioEngine
 timeline integration, operational recovery, a repeatable x64 beta package, and an opt-in
 buffered RTP-to-QPC timing experiment. Phase 8 formalizes the bottom anti-pop path with an
 automatic waveform-discontinuity detector and 1,000-cycle regression harness. Phase 9 adds
 opt-in low-latency WASAPI paths, adaptive RTP buffering, and a capture-based latency analyzer.
-Pairing, Apple codec decoding, encryption, remote PTP, multi-room, and WinUI are not implemented
-yet.
+Phase 10 adds an experimental receive-only PTPv2/QPC clock domain, drift servo, holdover/relock,
+bounded sample-rate correction, and guarded hard resynchronization. Pairing, Apple codec
+decoding, encryption, complete bidirectional PTP delay measurement, multi-room coordination,
+and WinUI are not implemented yet.
 
 ## Phase 1 capabilities
 
@@ -158,6 +160,27 @@ yet.
   jitter p95/p99, packet/decode cost, readiness gates, target-change counters, the classic
   protocol-declared latency, and a separate decomposed receiver-path estimate.
 
+## Phase 10 capabilities
+
+- A platform-neutral `ClockServo` estimates remote-nanosecond-to-local-QPC offset and drift,
+  rejects malformed/outlier samples, detects master changes, and exposes acquisition, lock,
+  holdover, relock, and unlock states.
+- Strict PTPv2 parsing accepts one-step Sync and paired two-step Sync/Follow_Up messages,
+  validates message lengths/timestamps, and applies the fixed-point correction field.
+- `WindowsPtpTimingService` owns exclusive IOCP UDP listeners on event/general ports 319/320,
+  joins the standard PTP multicast groups, supports an explicit IPv4 interface, and reports
+  port, multicast, receive, parser, source-clock, drift, uncertainty, and state diagnostics.
+- `DisciplinedRtpTimingEngine` keeps the RTP presentation boundary platform-neutral and feeds a
+  bounded clock correction into a preallocated linear `DriftResampler`.
+- Clock discontinuities above the configured threshold create a fresh audio epoch and travel
+  through `WindowsAudioStreamSink::HardResync`, preserving the mandatory fade-out/timeline
+  jump/fade-in path.
+- All sample-rate correction storage is allocated before stream processing; the decoder/audio
+  worker performs no per-packet heap expansion, and the WASAPI render-thread invariants remain
+  unchanged.
+- Deterministic servo, PTP parser/domain, drift-resampler, hard-resync, Windows IOCP service,
+  multicast-option, and exclusive-port-conflict tests cover the new boundary.
+
 ## Architecture
 
 ```text
@@ -168,9 +191,11 @@ DNS-SD -> IocpTcpServer -> AirPlayControlService -> SessionManager
                       WindowsRtpTransportController -> IocpUdpReceiver
                                                         |
                               RtpAudioStream <- adaptive RtpJitterBuffer
-                                    | <-> ITimingEngine
-                                    |      RTP time -> target QPC
-                                    IAudioDecoder (L16)
+                                    | <-> ITimingEngine <- PtpClockDomain <- UDP 319/320
+                                    |      RTP time -> target QPC       ^    Windows QPC
+                                    |      bounded drift correction     |
+                                    IAudioDecoder (L16)                 |
+                                    | -> preallocated DriftResampler ---+
                                     |
                          float32 IAudioFrameSink
                                     v
@@ -346,7 +371,29 @@ Enable the S7 local buffered-timing experiment with a 120 ms presentation reserv
 ```
 
 This flag does not advertise complete AirPlay 2 timing. It anchors one RTP audio stream to local
-QPC; the reserved timing UDP socket remains isolated until the later PTP/ClockServo stage.
+QPC and remains available as the deterministic no-network timing mode.
+
+Enable the S10 receive-only PTP timing experiment on the default multicast-capable interface:
+
+```powershell
+.\build\vs2022-x64\Debug\AirPlayWin.exe --serve --experimental-ptp-timing `
+    --name "Living Room PC" --duration 300
+```
+
+Use `--ptp-interface <IPv4>` on a multi-NIC machine to select the interface used for multicast
+membership. UDP ports 319 and 320 are opened exclusively; a bind/membership failure is reported
+instead of silently falling back. `--experimental-buffered-timing` and
+`--experimental-ptp-timing` are intentionally mutually exclusive.
+
+For a local packet-path smoke, start the receiver and run:
+
+```powershell
+.\tools\timing_probe\ptp_sync_replay.ps1 -TwoStep -Count 20 `
+    -IntervalMilliseconds 1000 -DriftPpm 100
+```
+
+The PowerShell tool can also inject a clock jump, but its scheduler is not a precision time
+source. Deterministic drift/mapping/holdover assertions live in the native test suite.
 
 The deterministic sender can inject normal, lost, duplicate, reordered, timeline-anchored,
 and retransmission-wrapped L16 packets:
@@ -358,7 +405,8 @@ and retransmission-wrapped L16 packets:
 
 Enable the S9 adaptive jitter policy and low-latency output path with `--serve --low-latency`.
 Add `--exclusive` to request Exclusive WASAPI. This changes local buffering/output behavior but
-does not add PTP, codec, pairing, or encryption capabilities to the advertised protocol.
+does not change codec, pairing, encryption, or advertised protocol capabilities. PTP remains a
+separate explicit S10 experiment.
 
 Analyze a dual-channel WAVE capture whose channel 0 contains the direct emitted impulse and
 channel 1 contains the physical/virtual loopback return:
@@ -505,6 +553,20 @@ physically accepted from QPC/model estimates alone.
 CPack generated `AirPlayWin-0.9.1-windows-x64.zip`; its executable, project README, installer
 guide, and install/uninstall scripts were inspected in the archive.
 
+Phase 10 adds four test modules for the clock servo, PTP packet/domain path, drift resampler,
+and Windows PTP timing service. The complete suite now contains 33 modules. It covers synthetic
++50/+100 ppm clocks, remote-time-to-QPC mapping, lock/holdover/relock/unlock, outliers, master
+changes, large clock jumps, one-step/two-step packets, bounded correction, stale-timeline hard
+resync, real IOCP event/general datagrams, multicast option validation, and exclusive port
+conflict detection. Final Release repeat and local UDP 319/320 smoke results are recorded in
+[phase 10](docs/phase-10.md).
+
+The final 33-module Release suite passed 50/50 runs in 48.47 seconds. A local service smoke
+joined both PTP multicast groups, received 12 Sync and 12 Follow_Up datagrams on UDP 319/320,
+and reported zero parser/socket/service errors. CPack generated
+`AirPlayWin-0.10.0-windows-x64.zip`; its Release executable, project README, installer guide,
+and install/uninstall scripts were inspected.
+
 ## Current boundary
 
 Shared mode remains the default. `--low-latency` opts into `IAudioClient3` when the endpoint
@@ -514,13 +576,14 @@ fallback. Latency values printed during playback are a decomposed software model
 calibrated loopback WAVE capture is required for receiver-added-latency acceptance.
 
 Discovery is IPv4-first and advertises only PCM/unencrypted capabilities that do not imply the
-absent pairing, crypto, PTP, or Apple codec modules. Phase 7 adds only a local single-stream
-buffered timing experiment and does not expand advertised media/security capabilities. Phase 8
-adds output-safety validation only and likewise changes no advertised protocol capability.
-Phase 5 accepts inbound retransmitted audio on the control port, but it does not originate resend
-requests or implement timing replies/PTP. Current Apple senders normally need the deferred pairing,
-encryption, codec, and remote-timing work; physical iPhone/iPad/Mac interoperability is therefore not
-claimed in this phase.
+absent pairing, crypto, or Apple codec modules. Phase 7 provides a local single-stream buffered
+timing experiment. Phase 10's separate explicit PTP mode passively receives Sync/Follow_Up,
+disciplines QPC, and corrects sample rate; it does not send Delay_Req, measure path RTT, select a
+grandmaster, or establish the absolute RTP-to-PTP phase required for a complete AirPlay 2 group.
+Those S11 coordination responsibilities remain outside the media transport. Phase 5 accepts
+inbound retransmitted audio on the control port but does not originate resend requests. Current
+Apple senders normally need the deferred pairing, encryption, codecs, and full timing/session
+work, so physical iPhone/iPad/Mac interoperability is not claimed in this phase.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and
@@ -530,4 +593,5 @@ See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) 
 [phase 7](docs/phase-7.md) for the buffered RTP-to-QPC timing experiment, and
 [phase 8](docs/phase-8.md) for anti-pop invariants and waveform regression.
 See [phase 9](docs/phase-9.md) for low-latency WASAPI, adaptive buffering, diagnostics, and the
-physical measurement boundary.
+physical measurement boundary, and [phase 10](docs/phase-10.md) for PTP/QPC clock discipline,
+holdover/relock, drift correction, and the S11 boundary.

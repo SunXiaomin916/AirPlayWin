@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 0.9.1 LANGUAGES CXX)
+project(AirPlayWin VERSION 0.10.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -17,6 +17,7 @@ add_library(airplaywin_core STATIC
     src/core/audio/AudioRingBuffer.cpp
     src/core/audio/AudioTransitionGuard.cpp
     src/core/audio/ClickPopDetector.cpp
+    src/core/audio/DriftResampler.cpp
     src/core/audio/LoopbackLatencyAnalyzer.cpp
     src/core/audio/PcmL16Decoder.cpp
     src/core/audio/TestSignalGenerator.cpp
@@ -33,6 +34,10 @@ add_library(airplaywin_core STATIC
     src/core/protocol/SdpAudioParser.cpp
     src/core/session/SessionManager.cpp
     src/core/timing/BufferedRtpTimingEngine.cpp
+    src/core/timing/ClockServo.cpp
+    src/core/timing/DisciplinedRtpTimingEngine.cpp
+    src/core/timing/PtpClockDomain.cpp
+    src/core/timing/PtpPacket.cpp
     src/core/transport/RtpAudioStream.cpp
     src/core/transport/RtpJitterBuffer.cpp
     src/core/transport/RtpPacket.cpp
@@ -57,6 +62,7 @@ add_library(airplaywin_windows STATIC
     src/platform/windows/system/WindowsFirewallManager.cpp
     src/platform/windows/system/WindowsPowerEventMonitor.cpp
     src/platform/windows/timing/QpcClock.cpp
+    src/platform/windows/timing/WindowsPtpTimingService.cpp
 )
 
 target_include_directories(airplaywin_windows PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

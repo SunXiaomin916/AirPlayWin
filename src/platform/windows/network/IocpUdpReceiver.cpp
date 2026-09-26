@@ -34,7 +34,7 @@ public:
     [[nodiscard]] bool Start(const IocpUdpReceiverOptions& options) {
         if (running_.load(std::memory_order_acquire) || options.receive_depth == 0U ||
             options.receive_depth > 32U || options.max_datagram_bytes < 12U ||
-            options.max_datagram_bytes > 65'507U) {
+            options.max_datagram_bytes > 65'507U || options.multicast_groups.size() > 8U) {
             last_error_.store(ERROR_INVALID_PARAMETER, std::memory_order_release);
             return false;
         }
@@ -53,6 +53,15 @@ public:
             FailStart(static_cast<std::uint32_t>(WSAGetLastError()));
             return false;
         }
+        if (options.exclusive_address) {
+            constexpr BOOL exclusive = TRUE;
+            if (setsockopt(socket_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                           reinterpret_cast<const char*>(&exclusive),
+                           sizeof(exclusive)) == SOCKET_ERROR) {
+                FailStart(static_cast<std::uint32_t>(WSAGetLastError()));
+                return false;
+            }
+        }
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(options.port);
@@ -61,6 +70,28 @@ public:
                 SOCKET_ERROR) {
             FailStart(static_cast<std::uint32_t>(WSAGetLastError()));
             return false;
+        }
+        in_addr multicast_interface{};
+        if (!options.multicast_groups.empty() &&
+            InetPtonA(AF_INET, options.multicast_interface_address.c_str(),
+                      &multicast_interface) != 1) {
+            FailStart(ERROR_INVALID_PARAMETER);
+            return false;
+        }
+        for (const auto& group : options.multicast_groups) {
+            ip_mreq request{};
+            if (InetPtonA(AF_INET, group.c_str(), &request.imr_multiaddr) != 1 ||
+                !IN_MULTICAST(ntohl(request.imr_multiaddr.s_addr))) {
+                FailStart(ERROR_INVALID_PARAMETER);
+                return false;
+            }
+            request.imr_interface = multicast_interface;
+            if (setsockopt(socket_, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                           reinterpret_cast<const char*>(&request),
+                           sizeof(request)) == SOCKET_ERROR) {
+                FailStart(static_cast<std::uint32_t>(WSAGetLastError()));
+                return false;
+            }
         }
         int address_length = sizeof(address);
         if (getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &address_length) ==

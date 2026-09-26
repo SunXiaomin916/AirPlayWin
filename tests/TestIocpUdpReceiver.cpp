@@ -85,4 +85,9 @@ void TestIocpUdpReceiver() {
     APW_EXPECT(diagnostics.receive_errors == 0U);
     receiver.Stop();
     APW_EXPECT(!receiver.Running());
+    APW_EXPECT(!receiver.Start({.bind_address = "127.0.0.1",
+                                .port = 0U,
+                                .receive_depth = 1U,
+                                .max_datagram_bytes = 1'024U,
+                                .multicast_groups = {"not-a-multicast-address"}}));
 }

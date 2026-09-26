@@ -61,6 +61,11 @@ public:
         ++flush_count_;
     }
 
+    void HardResync() noexcept override {
+        std::scoped_lock lock{mutex_};
+        ++hard_resync_count_;
+    }
+
     void SetVolume(const float linear_gain) noexcept override {
         std::scoped_lock lock{mutex_};
         volume_ = linear_gain;
@@ -127,6 +132,11 @@ public:
         return stop_count_;
     }
 
+    [[nodiscard]] std::uint64_t HardResyncCount() const noexcept {
+        std::scoped_lock lock{mutex_};
+        return hard_resync_count_;
+    }
+
 private:
     mutable std::mutex mutex_{};
     audio::AudioFormat format_{};
@@ -139,6 +149,7 @@ private:
     std::uint64_t resume_count_{0U};
     std::uint64_t flush_count_{0U};
     std::uint64_t stop_count_{0U};
+    std::uint64_t hard_resync_count_{0U};
     std::uint64_t underrun_count_{0U};
     std::uint32_t queued_frames_{0U};
     std::uint64_t output_latency_microseconds_{0U};

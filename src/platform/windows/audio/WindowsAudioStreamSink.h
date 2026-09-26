@@ -41,6 +41,7 @@ public:
     void Pause() noexcept override;
     void Resume() noexcept override;
     void Flush() noexcept override;
+    void HardResync() noexcept override;
     void SetVolume(float linear_gain) noexcept override;
     void Stop() noexcept override;
     [[nodiscard]] airplaywin::audio::AudioSinkFeedback Feedback() const noexcept override;

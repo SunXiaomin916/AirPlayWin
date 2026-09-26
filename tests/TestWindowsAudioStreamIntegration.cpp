@@ -207,6 +207,13 @@ void TestWindowsAudioStreamIntegration() {
     APW_EXPECT(scheduled.last_target_qpc == target);
     APW_EXPECT(observed_scheduled_output->last_timestamp_qpc_.load(
                    std::memory_order_acquire) == target);
+    const auto epoch_before_resync =
+        observed_scheduled_output->epoch_.load(std::memory_order_acquire);
+    scheduled_sink.HardResync();
+    APW_EXPECT(observed_scheduled_output->epoch_.load(std::memory_order_acquire) ==
+               epoch_before_resync + 1U);
+    APW_EXPECT(observed_scheduled_output->transition_.load(std::memory_order_acquire) ==
+               AudioTransition::HardResync);
 
     const auto cancelled_target = airplaywin::windows::timing::QpcClock::Now() +
                                   frequency * 250 / 1'000;

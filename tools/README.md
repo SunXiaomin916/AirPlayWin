@@ -24,6 +24,11 @@ dual-channel reference/return mode or known-stimulus-frame mode, with configurab
 threshold and maximum latency. Use `--play --signal latency-pulse` for capture: unlike the
 ordinary immediate impulse, its first pulse occurs after endpoint silent prewarm/fade-in.
 
+Phase 10 adds `timing_probe/ptp_sync_replay.ps1`, a deterministic one-step or two-step PTPv2
+Sync/Follow_Up packet generator. It can inject bounded synthetic drift and a clock jump into the
+experimental `--experimental-ptp-timing` receiver. It validates the UDP/IOCP, parser, clock-domain,
+and diagnostics path; PowerShell scheduling is deliberately not treated as calibration evidence.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
 injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not
 pretend that QPC-only timing measures driver/DAC/analog latency; capture routing remains a

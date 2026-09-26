@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -9,9 +10,42 @@
 #include "FakeAudioFrameSink.h"
 #include "RtpTestUtils.h"
 #include "core/audio/PcmL16Decoder.h"
+#include "core/timing/ITimingEngine.h"
 #include "core/transport/RtpAudioStream.h"
 
 namespace {
+
+class ServoTimingEngine final : public airplaywin::timing::ITimingEngine {
+public:
+    void Reset(const std::optional<std::uint64_t> remote_time) noexcept override {
+        anchor_.store(remote_time.value_or(0U), std::memory_order_release);
+    }
+
+    [[nodiscard]] std::optional<std::int64_t> RemoteToLocalQpc(
+        const std::uint64_t remote_time) noexcept override {
+        return static_cast<std::int64_t>(remote_time + 1'000U);
+    }
+
+    [[nodiscard]] airplaywin::timing::TimingDiagnostics Diagnostics()
+        const noexcept override {
+        airplaywin::timing::TimingDiagnostics result;
+        result.enabled = true;
+        result.locked = true;
+        result.servo.locked = true;
+        result.servo.rate_correction = 1.01;
+        return result;
+    }
+
+    [[nodiscard]] double RateCorrection() const noexcept override { return 1.01; }
+
+    [[nodiscard]] bool ConsumeHardResyncRequest() noexcept override {
+        return hard_resync_.exchange(false, std::memory_order_acq_rel);
+    }
+
+private:
+    std::atomic<std::uint64_t> anchor_{0U};
+    std::atomic<bool> hard_resync_{true};
+};
 
 [[nodiscard]] bool WaitForFrames(const airplaywin::tests::FakeAudioFrameSink& sink,
                                  const std::uint64_t frames) {
@@ -142,4 +176,39 @@ void TestRtpAudioStream() {
                airplaywin::transport::AdaptiveJitterState::Degraded);
     stream.Stop();
     APW_EXPECT(sink.StopCount() == 1U);
+
+    FakeAudioFrameSink disciplined_sink;
+    RtpAudioStream disciplined_stream{
+        RtpAudioStreamConfig{
+            .connection_id = 43U,
+            .format = {.sample_rate = 8'000U,
+                       .channel_count = 1U,
+                       .payload_type = 96U,
+                       .nominal_frames_per_packet = 100U},
+            .jitter_buffer = {.capacity_packets = 16U,
+                              .target_packets = 1U,
+                              .clock_rate = 8'000U},
+        },
+        std::make_unique<airplaywin::audio::PcmL16Decoder>(), disciplined_sink,
+        std::make_unique<ServoTimingEngine>()};
+    APW_EXPECT(disciplined_stream.Start());
+    APW_EXPECT(disciplined_stream.Record(
+        {.sequence_number = static_cast<std::uint16_t>(1U), .rtp_timestamp = 1'000U}));
+    std::array<std::byte, 200U> servo_payload{};
+    for (std::uint16_t packet = 0U; packet < 10U; ++packet) {
+        disciplined_stream.OnDatagram(
+            BuildRtpPacket(static_cast<std::uint16_t>(packet + 1U),
+                           1'000U + static_cast<std::uint32_t>(packet) * 100U,
+                           servo_payload),
+            source, 2'000'000'000LL + static_cast<std::int64_t>(packet) * 12'500'000LL);
+    }
+    APW_EXPECT(WaitForFrames(disciplined_sink, 1'010U));
+    const auto disciplined = disciplined_stream.Diagnostics();
+    APW_EXPECT(disciplined.resampled_input_frames == 1'000U);
+    APW_EXPECT(disciplined.resampled_output_frames == 1'010U);
+    APW_EXPECT(disciplined.drift_inserted_frames == 10U);
+    APW_EXPECT(disciplined.drift_dropped_frames == 0U);
+    APW_EXPECT(disciplined.timing_hard_resync_requests == 1U);
+    APW_EXPECT(disciplined_sink.HardResyncCount() == 1U);
+    disciplined_stream.Stop();
 }

@@ -36,6 +36,8 @@ RtpAudioStream::RtpAudioStream(RtpAudioStreamConfig config,
     const auto max_frames = std::max<std::size_t>(config_.format.nominal_frames_per_packet,
                                                   max_payload_frames);
     decode_storage_.resize(max_frames * config_.format.channel_count);
+    const auto maximum_resampled_frames = max_frames + max_frames / 50U + 2U;
+    resample_storage_.resize(maximum_resampled_frames * config_.format.channel_count);
 }
 
 RtpAudioStream::~RtpAudioStream() {
@@ -250,6 +252,14 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .decoded_frames = decoded_frames_.load(std::memory_order_relaxed),
         .concealed_packets = concealed_packets_.load(std::memory_order_relaxed),
         .concealed_frames = concealed_frames_.load(std::memory_order_relaxed),
+        .resampled_input_frames =
+            resampled_input_frames_.load(std::memory_order_relaxed),
+        .resampled_output_frames =
+            resampled_output_frames_.load(std::memory_order_relaxed),
+        .drift_inserted_frames = drift_inserted_frames_.load(std::memory_order_relaxed),
+        .drift_dropped_frames = drift_dropped_frames_.load(std::memory_order_relaxed),
+        .timing_hard_resync_requests =
+            timing_hard_resync_requests_.load(std::memory_order_relaxed),
         .packet_processing_average_microseconds = packet_average,
         .packet_processing_maximum_microseconds =
             packet_processing_maximum_microseconds_.load(std::memory_order_relaxed),
@@ -274,6 +284,7 @@ void RtpAudioStream::ResetPacketTimeline(const AudioTimelineAnchor& anchor) noex
     std::scoped_lock timeline_lock{timeline_mutex_};
     jitter_buffer_.Flush();
     decoder_->Reset();
+    drift_resampler_.Reset();
     have_decoded_frame_ = false;
     last_rtp_timestamp_ = 0U;
     last_frame_count_ = 0U;
@@ -406,14 +417,47 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             last_error_.store(6U, std::memory_order_relaxed);
             continue;
         }
-        const auto samples = static_cast<std::size_t>(result.frame_count) *
-                             config_.format.channel_count;
+        auto submitted_frames = result.frame_count;
+        auto submitted_samples = std::span<const float>{
+            decode_storage_.data(),
+            static_cast<std::size_t>(result.frame_count) * config_.format.channel_count};
+        if (timing_engine_) {
+            if (timing_engine_->ConsumeHardResyncRequest()) {
+                sink_.HardResync();
+                timing_engine_->Reset(rtp_timestamp);
+                drift_resampler_.Reset();
+                timing_hard_resync_requests_.fetch_add(1U, std::memory_order_relaxed);
+            }
+            const auto resampled = drift_resampler_.Process(
+                submitted_samples, result.frame_count, config_.format.channel_count,
+                timing_engine_->RateCorrection(), resample_storage_);
+            if (!resampled.succeeded) {
+                decoder_errors_.fetch_add(1U, std::memory_order_relaxed);
+                last_error_.store(8U, std::memory_order_relaxed);
+                continue;
+            }
+            submitted_frames = resampled.output_frames;
+            submitted_samples = std::span<const float>{
+                resample_storage_.data(),
+                static_cast<std::size_t>(submitted_frames) * config_.format.channel_count};
+            resampled_input_frames_.fetch_add(result.frame_count,
+                                              std::memory_order_relaxed);
+            resampled_output_frames_.fetch_add(submitted_frames,
+                                               std::memory_order_relaxed);
+            if (submitted_frames > result.frame_count) {
+                drift_inserted_frames_.fetch_add(submitted_frames - result.frame_count,
+                                                 std::memory_order_relaxed);
+            } else {
+                drift_dropped_frames_.fetch_add(result.frame_count - submitted_frames,
+                                                std::memory_order_relaxed);
+            }
+        }
         const auto target_qpc = timing_engine_
                                     ? timing_engine_->RemoteToLocalQpc(rtp_timestamp)
                                     : std::optional<std::int64_t>{};
         const audio::DecodedAudioFrameView decoded{
-            .interleaved_samples = std::span<const float>{decode_storage_.data(), samples},
-            .frame_count = result.frame_count,
+            .interleaved_samples = submitted_samples,
+            .frame_count = submitted_frames,
             .rtp_timestamp = rtp_timestamp,
             .extended_sequence_number = packet.extended_sequence_number,
             .target_qpc = target_qpc,

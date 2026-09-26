@@ -6,6 +6,7 @@
 #include <string>
 
 #include "core/audio/IAudioFrameSink.h"
+#include "core/timing/PtpClockDomain.h"
 #include "core/transport/IAudioTransportController.h"
 #include "core/transport/IAudioStream.h"
 #include "core/transport/IUdpDatagramHandler.h"
@@ -23,7 +24,9 @@ struct WindowsRtpTransportOptions final {
     std::uint32_t jitter_stable_window_packets{128U};
     std::uint32_t jitter_recovery_window_packets{32U};
     bool enable_buffered_timing{false};
+    bool enable_ptp_timing{false};
     std::uint32_t buffered_timing_milliseconds{120U};
+    std::shared_ptr<airplaywin::timing::PtpClockDomain> ptp_clock_domain{};
 };
 
 class WindowsRtpTransportController final

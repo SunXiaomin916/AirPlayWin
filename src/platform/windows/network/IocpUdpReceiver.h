@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/transport/IUdpDatagramHandler.h"
 
@@ -14,6 +15,9 @@ struct IocpUdpReceiverOptions final {
     std::uint16_t port{0U};
     std::size_t receive_depth{4U};
     std::size_t max_datagram_bytes{8U * 1'024U};
+    bool exclusive_address{false};
+    std::vector<std::string> multicast_groups{};
+    std::string multicast_interface_address{"0.0.0.0"};
 };
 
 struct IocpUdpReceiverDiagnostics final {

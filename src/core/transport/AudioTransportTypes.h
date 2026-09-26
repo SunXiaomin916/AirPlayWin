@@ -78,6 +78,11 @@ struct AudioTransportDiagnostics final {
     std::uint64_t decoded_frames{0U};
     std::uint64_t concealed_packets{0U};
     std::uint64_t concealed_frames{0U};
+    std::uint64_t resampled_input_frames{0U};
+    std::uint64_t resampled_output_frames{0U};
+    std::uint64_t drift_inserted_frames{0U};
+    std::uint64_t drift_dropped_frames{0U};
+    std::uint64_t timing_hard_resync_requests{0U};
     std::uint64_t packet_processing_average_microseconds{0U};
     std::uint64_t packet_processing_maximum_microseconds{0U};
     std::uint64_t decoder_errors{0U};

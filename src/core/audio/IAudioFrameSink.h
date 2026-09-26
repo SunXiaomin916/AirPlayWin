@@ -14,6 +14,7 @@ public:
     virtual void Pause() noexcept = 0;
     virtual void Resume() noexcept = 0;
     virtual void Flush() noexcept = 0;
+    virtual void HardResync() noexcept { Flush(); }
     virtual void SetVolume(float linear_gain) noexcept = 0;
     virtual void Stop() noexcept = 0;
     [[nodiscard]] virtual AudioSinkFeedback Feedback() const noexcept { return {}; }
