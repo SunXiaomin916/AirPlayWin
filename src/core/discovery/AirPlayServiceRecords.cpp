@@ -93,7 +93,16 @@ constexpr std::size_t kMaxAdvertisedNameUtf8Bytes = 50U;
     return bytes;
 }
 
-[[nodiscard]] std::vector<TxtProperty> MakeRaopProperties() {
+[[nodiscard]] std::vector<TxtProperty> MakeRaopProperties(const bool classic_raop) {
+    if (classic_raop) {
+        return {
+            {L"txtvers", L"1"}, {L"ch", L"2"},     {L"cn", L"0,1"},
+            {L"da", L"true"},  {L"et", L"0,1"},   {L"md", L"0,1,2"},
+            {L"pw", L"false"}, {L"sr", L"44100"}, {L"ss", L"16"},
+            {L"sv", L"false"}, {L"tp", L"UDP"},   {L"vn", L"65537"},
+            {L"vs", L"105.1"}, {L"am", L"AirPlayWin1,1"}, {L"sf", L"0x4"},
+        };
+    }
     return {
         {L"txtvers", L"1"}, {L"ch", L"2"},       {L"cn", L"0"},
         {L"da", L"true"},  {L"et", L"0"},       {L"md", L"0,1,2"},
@@ -272,7 +281,7 @@ std::vector<ServiceDefinition> BuildAirPlayServiceRecords(
             .domain = L"local",
             .host_name = normalized_host,
             .port = config.raop_port,
-            .txt_properties = MakeRaopProperties(),
+            .txt_properties = MakeRaopProperties(config.classic_raop),
         });
     }
     if (config.advertise_airplay) {

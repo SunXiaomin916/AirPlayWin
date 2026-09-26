@@ -101,6 +101,9 @@ private:
     std::atomic<std::uint64_t> packet_processing_average_microseconds_{0U};
     std::atomic<std::uint64_t> packet_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decoder_errors_{0U};
+    std::atomic<audio::DecodeFailurePoint> last_decoder_failure_point_{
+        audio::DecodeFailurePoint::None};
+    std::atomic<std::uint32_t> last_decoder_platform_error_{0U};
     std::atomic<std::uint64_t> decode_processing_average_microseconds_{0U};
     std::atomic<std::uint64_t> decode_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decode_budget_miss_count_{0U};

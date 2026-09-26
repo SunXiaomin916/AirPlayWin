@@ -87,6 +87,9 @@ struct AudioTransportDiagnostics final {
     std::uint64_t packet_processing_average_microseconds{0U};
     std::uint64_t packet_processing_maximum_microseconds{0U};
     std::uint64_t decoder_errors{0U};
+    audio::DecodeFailurePoint last_decoder_failure_point{
+        audio::DecodeFailurePoint::None};
+    std::uint32_t last_decoder_platform_error{0U};
     std::uint64_t decode_processing_average_microseconds{0U};
     std::uint64_t decode_processing_maximum_microseconds{0U};
     std::uint64_t decode_budget_miss_count{0U};

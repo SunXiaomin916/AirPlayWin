@@ -52,8 +52,9 @@ regression runner without claiming unperformed physical multi-speaker measuremen
   generated session identifiers.
 - One active sender by default; a second `ANNOUNCE` receives RTSP 453. A tested preemption
   policy is available to a future coordinator but is not enabled by the CLI.
-- Control methods for `OPTIONS`, SDP `ANNOUNCE`, empty `GET_PARAMETER`, volume
-  `SET_PARAMETER`, and `TEARDOWN`. Deferred media methods return explicit RTSP errors.
+- Control methods for `OPTIONS`, SDP `ANNOUNCE`, empty/volume `GET_PARAMETER`, volume/progress/
+  DMAP/artwork `SET_PARAMETER`, and `TEARDOWN`. Metadata bodies are acknowledged without being
+  retained; deferred media methods return explicit RTSP errors.
 - Authentication is behind `ISessionAuthenticator`; the current unencrypted profile uses an
   open implementation. Pairing routes return 501 and no long-term/test keys exist.
 - Winsock2 overlapped receive/send on an IO completion port, keep-alive TCP connections,
@@ -65,8 +66,8 @@ regression runner without claiming unperformed physical multi-speaker measuremen
   timestamp, SSRC, marker, and payload type.
 - Fixed-capacity jitter buffer with sequence wrap extension, startup prefill, reorder,
   duplicate, late, loss, overflow, and interarrival-jitter diagnostics.
-- `IAudioDecoder` abstraction plus a signed big-endian RTP/L16 decoder with zero-frame loss
-  concealment and float32 output.
+- `IAudioDecoder` abstraction plus signed big-endian RTP/L16 and Windows Media Foundation
+  Apple Lossless decoders with zero-frame loss concealment and float32 output.
 - `RtpAudioStream` separates IOCP packet receipt from decode/audio submission using a dedicated
   worker and bounded, preallocated packet/decode storage.
 - Windows overlapped UDP/IOCP receiver and a session-scoped controller for negotiated
@@ -419,8 +420,22 @@ Publish both services and listen on the matching RAOP/AirPlay TCP ports for five
 .\build\vs2022-x64\Debug\AirPlayWin.exe --serve --name "Living Room PC" --duration 300
 ```
 
-After an L16 SDP `ANNOUNCE` and UDP `SETUP`, the process accepts RTP on its negotiated
-`server_port`, decodes on a separate stream worker, and submits float32 frames to WASAPI. Add
+For compatibility testing with a sender that otherwise selects an unsupported AirPlay 2
+media path, publish only the implemented classic RAOP realtime-audio profile:
+
+```powershell
+.\build\vs2022-x64\Debug\AirPlayWin.exe --serve --classic-raop `
+    --name "Living Room PC Classic" --duration 300
+```
+
+This mode suppresses the `_airplay._tcp` record and advertises PCM/Apple Lossless
+(`cn=0,1`) with legacy RSA-AES (`et=0,1`). Encrypted ALAC packets are decrypted with CNG,
+decoded by the Windows Media Foundation ALAC transform, and passed through the existing
+epoch/transition-guarded WASAPI path. It remains a classic realtime RAOP receiver; FairPlay,
+pairing, and AirPlay 2 buffered audio are not implemented.
+
+After an L16 or Apple Lossless SDP `ANNOUNCE` and UDP `SETUP`, the process accepts RTP on its
+negotiated `server_port`, decodes on a separate stream worker, and submits float32 frames to WASAPI. Add
 `--device "{endpoint-id}"` to select a fixed output endpoint; otherwise the sink follows the
 default endpoint. The process prints control, RTP, jitter-buffer, decoder, and WASAPI metrics.
 `--raop-port` and `--airplay-port` override the control ports.

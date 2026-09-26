@@ -35,6 +35,7 @@
 #include "platform/windows/audio/WindowsAudioEngine.h"
 #include "platform/windows/audio/WindowsAudioStreamSink.h"
 #include "platform/windows/audio/WindowsEndpointCalibrationStore.h"
+#include "platform/windows/crypto/WindowsRaopCryptoProvider.h"
 #include "platform/windows/network/WindowsDiscoveryService.h"
 #include "platform/windows/network/IocpTcpServer.h"
 #include "platform/windows/network/WindowsNetworkInterfaceEnumerator.h"
@@ -59,6 +60,7 @@ using airplaywin::windows::audio::WindowsAudioDeviceEnumerator;
 using airplaywin::windows::audio::WindowsAudioEngine;
 using airplaywin::windows::audio::WindowsAudioStreamSink;
 using airplaywin::windows::audio::WindowsEndpointCalibrationStore;
+using airplaywin::windows::crypto::WindowsRaopCryptoProvider;
 using airplaywin::windows::network::WindowsDiscoveryService;
 using airplaywin::windows::network::IocpTcpServer;
 using airplaywin::windows::network::WindowsNetworkInterfaceEnumerator;
@@ -260,6 +262,7 @@ struct CommandLine final {
     airplaywin::discovery::DeviceId discovery_device_id{};
     std::uint16_t raop_port{5'000U};
     std::uint16_t airplay_port{7'000U};
+    bool classic_raop{false};
     bool include_virtual_interfaces{false};
     TestSignal signal{TestSignal::Sine440Hz};
     std::uint32_t sample_rate{48'000U};
@@ -283,6 +286,7 @@ void PrintUsage() {
         << L"             [--diagnostics-interval <seconds>]\n\n"
         << L"  AirPlayWin --discover [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--raop-port <port>] [--airplay-port <port>] [--duration <seconds>]\n"
+        << L"             [--classic-raop]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --serve [--name <speaker-name>] [--device-id <AA:BB:CC:DD:EE:FF>]\n"
         << L"             [--device <endpoint-id>]\n"
@@ -292,6 +296,7 @@ void PrintUsage() {
         << L"             [--run-until-stopped] [--diagnostics-interval <seconds>]\n"
         << L"             [--experimental-buffered-timing [--buffered-timing-ms <20..2000>]]\n"
         << L"             [--experimental-ptp-timing [--ptp-interface <IPv4>]]\n"
+        << L"             [--classic-raop]\n"
         << L"             [--include-virtual-interfaces]\n\n"
         << L"  AirPlayWin --analyze-loopback <capture.wav>\n"
         << L"             [--reference-channel <index> --output-channel <index>]\n"
@@ -582,6 +587,8 @@ void PrintUsage() {
             if (!ParsePort(argv[++index], command.airplay_port)) {
                 return false;
             }
+        } else if (argument == L"--classic-raop") {
+            command.classic_raop = true;
         } else if (argument == L"--include-virtual-interfaces") {
             command.include_virtual_interfaces = true;
         } else if (argument == L"--signal" && index + 1 < argc) {
@@ -1187,7 +1194,8 @@ void PrintDiscoveryDiagnostics(const airplaywin::discovery::DiscoveryDiagnostics
         .raop_port = command.raop_port,
         .airplay_port = command.airplay_port,
         .advertise_raop = true,
-        .advertise_airplay = true,
+        .advertise_airplay = !command.classic_raop,
+        .classic_raop = command.classic_raop,
         .include_virtual_interfaces = command.include_virtual_interfaces,
     };
     if (airplaywin::discovery::IsZeroDeviceId(config.device_id)) {
@@ -1236,7 +1244,8 @@ void PrintControlDiagnostics(
     const airplaywin::protocol::ControlDiagnostics& control,
     const airplaywin::windows::network::IocpTcpServerDiagnostics& raop,
     const airplaywin::windows::network::IocpTcpServerDiagnostics& airplay,
-    const airplaywin::windows::audio::AudioStreamSinkDiagnostics& audio) {
+    const airplaywin::windows::audio::AudioStreamSinkDiagnostics& audio,
+    std::uint64_t& last_request_trace_sequence) {
     const auto& transport = control.transport;
     std::wcout << L"control: sessions=" << control.sessions.active_connections
                << L", requests=" << control.received_requests
@@ -1259,6 +1268,28 @@ void PrintControlDiagnostics(
                << airplay.accepted_connections << L", rx=" << airplay.received_bytes
                << L", tx=" << airplay.sent_bytes << L", timeouts="
                << airplay.idle_timeouts << L", errors=" << airplay.transport_errors << L"\n"
+               << std::flush;
+    for (const auto& request : control.recent_requests) {
+        if (request.sequence <= last_request_trace_sequence) {
+            continue;
+        }
+        const std::wstring method{request.method.begin(), request.method.end()};
+        const std::wstring target{request.target.begin(), request.target.end()};
+        const std::wstring protocol{request.protocol.begin(), request.protocol.end()};
+        const std::wstring content_type{request.content_type.begin(), request.content_type.end()};
+        std::wcout << L"  request[" << request.sequence << L"] connection="
+                   << request.connection_id << L", " << method << L" " << target << L" "
+                   << protocol << L", content_type="
+                   << (content_type.empty() ? L"none" : content_type)
+                   << L", body_bytes=" << request.body_bytes
+                   << L", response=" << request.response_status
+                   << L", apple_challenge/response="
+                   << (request.apple_challenge_present ? L"yes" : L"no") << L"/"
+                   << (request.apple_response_sent ? L"yes" : L"no") << L"\n";
+        last_request_trace_sequence =
+            (std::max)(last_request_trace_sequence, request.sequence);
+    }
+    std::wcout
                << L"  RTP " << transport.server_audio_port
                << L": configured=" << (transport.configured ? L"yes" : L"no")
                << L", recording=" << (transport.recording ? L"yes" : L"no")
@@ -1308,6 +1339,11 @@ void PrintControlDiagnostics(
                << L", packet_us(avg/max)="
                << transport.packet_processing_average_microseconds << L"/"
                << transport.packet_processing_maximum_microseconds
+               << L", decoder_error(count/stage/code)=" << transport.decoder_errors
+               << L"/" << static_cast<unsigned int>(
+                               transport.last_decoder_failure_point)
+               << L"/0x" << std::hex << transport.last_decoder_platform_error
+               << std::dec
                << L", decode_us(avg/max)="
                << transport.decode_processing_average_microseconds << L"/"
                << transport.decode_processing_maximum_microseconds
@@ -1475,6 +1511,15 @@ void PrintRecoveryDiagnostics(
         std::wcerr << L"RAOP and AirPlay control ports must be different.\n";
         return 15;
     }
+    auto receiver_device_id = command.discovery_device_id;
+    if (airplaywin::discovery::IsZeroDeviceId(receiver_device_id)) {
+        receiver_device_id = WindowsNetworkInterfaceEnumerator::SystemDeviceId();
+    }
+    WindowsRaopCryptoProvider raop_crypto{receiver_device_id};
+    if (command.classic_raop && !raop_crypto.Available()) {
+        std::wcerr << L"Classic RAOP cryptographic provider initialization failed.\n";
+        return 26;
+    }
     airplaywin::crypto::OpenSessionAuthenticator authenticator;
     WindowsAudioStreamSink audio_sink{WasapiOutputOptions{
         .device_id = command.device_id,
@@ -1511,21 +1556,20 @@ void PrintRecoveryDiagnostics(
              command.endpoint_calibration_offset_microseconds}};
     airplaywin::protocol::AirPlayControlService control{
         authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
-        airplaywin::protocol::ParserLimits{}, &media_transport};
+        airplaywin::protocol::ParserLimits{}, &media_transport,
+        command.classic_raop ? &raop_crypto : nullptr};
     IocpTcpServer raop_server{control};
     IocpTcpServer airplay_server{control};
     airplaywin::discovery::DiscoveryConfig discovery_config{
         .device_name = command.discovery_name,
-        .device_id = command.discovery_device_id,
+        .device_id = receiver_device_id,
         .raop_port = command.raop_port,
         .airplay_port = command.airplay_port,
         .advertise_raop = true,
-        .advertise_airplay = true,
+        .advertise_airplay = !command.classic_raop,
+        .classic_raop = command.classic_raop,
         .include_virtual_interfaces = command.include_virtual_interfaces,
     };
-    if (airplaywin::discovery::IsZeroDeviceId(discovery_config.device_id)) {
-        discovery_config.device_id = WindowsNetworkInterfaceEnumerator::SystemDeviceId();
-    }
     WindowsDiscoveryService discovery;
     auto stop_services = [&]() noexcept {
         discovery.Stop();
@@ -1615,6 +1659,7 @@ void PrintRecoveryDiagnostics(
                   std::chrono::seconds(command.duration_seconds);
     const auto interval = std::chrono::seconds(command.diagnostics_interval_seconds);
     auto next_diagnostics = std::chrono::steady_clock::now();
+    std::uint64_t last_request_trace_sequence = 0U;
     const auto lifecycle_suspend_at =
         command.lifecycle_smoke ? std::chrono::steady_clock::now() + std::chrono::seconds{1}
                                 : std::chrono::steady_clock::time_point::max();
@@ -1660,7 +1705,8 @@ void PrintRecoveryDiagnostics(
         }
         if (now >= next_diagnostics) {
             PrintControlDiagnostics(control.Diagnostics(), raop_server.Diagnostics(),
-                                    airplay_server.Diagnostics(), audio_sink.Diagnostics());
+                                    airplay_server.Diagnostics(), audio_sink.Diagnostics(),
+                                    last_request_trace_sequence);
             PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
             if (ptp_service) {
                 PrintPtpDiagnostics(ptp_service->Diagnostics());
@@ -1674,7 +1720,7 @@ void PrintRecoveryDiagnostics(
     const auto airplay_diagnostics = airplay_server.Diagnostics();
     const auto control_diagnostics = control.Diagnostics();
     PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics,
-                            audio_sink.Diagnostics());
+                            audio_sink.Diagnostics(), last_request_trace_sequence);
     PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
     if (ptp_service) {
         PrintPtpDiagnostics(ptp_service->Diagnostics());

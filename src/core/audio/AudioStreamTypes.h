@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -11,6 +12,7 @@ namespace airplaywin::audio {
 
 enum class AudioCodec : std::uint8_t {
     PcmL16BigEndian,
+    AppleLossless,
 };
 
 struct EncodedAudioFormat final {
@@ -19,11 +21,17 @@ struct EncodedAudioFormat final {
     std::uint16_t channel_count{2U};
     std::uint8_t payload_type{96U};
     std::uint32_t nominal_frames_per_packet{352U};
+    std::array<std::byte, 24U> codec_config{};
+    std::uint8_t codec_config_size{0U};
+    bool encrypted{false};
+    std::array<std::byte, 16U> encryption_key{};
+    std::array<std::byte, 16U> encryption_iv{};
 
     [[nodiscard]] constexpr bool IsValid() const noexcept {
         return sample_rate >= 8'000U && sample_rate <= 384'000U && channel_count >= 1U &&
                channel_count <= 8U && payload_type <= 127U &&
-               nominal_frames_per_packet >= 1U && nominal_frames_per_packet <= 8'192U;
+               nominal_frames_per_packet >= 1U && nominal_frames_per_packet <= 8'192U &&
+               (codec != AudioCodec::AppleLossless || codec_config_size == codec_config.size());
     }
 
     [[nodiscard]] constexpr AudioFormat DecodedFormat() const noexcept {
@@ -45,9 +53,21 @@ enum class DecodeStatus : std::uint8_t {
     OutputTooSmall,
 };
 
+enum class DecodeFailurePoint : std::uint8_t {
+    None,
+    Decryption,
+    InputBuffer,
+    DecoderInput,
+    DecoderOutput,
+    OutputBuffer,
+    OutputValidation,
+};
+
 struct DecodeResult final {
     DecodeStatus status{DecodeStatus::NotConfigured};
     std::uint32_t frame_count{0U};
+    DecodeFailurePoint failure_point{DecodeFailurePoint::None};
+    std::uint32_t platform_error{0U};
 };
 
 struct DecodedAudioFrameView final {

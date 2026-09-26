@@ -198,6 +198,7 @@ private:
         SOCKET socket{INVALID_SOCKET};
         transport::ConnectionId id{0U};
         std::string peer_address{};
+        std::string local_address{};
         std::chrono::steady_clock::time_point last_activity{std::chrono::steady_clock::now()};
         std::deque<std::vector<std::byte>> pending_writes{};
         std::size_t send_offset{0U};
@@ -278,6 +279,16 @@ private:
             char peer_text[INET_ADDRSTRLEN]{};
             if (InetNtopA(AF_INET, &peer.sin_addr, peer_text, sizeof(peer_text)) != nullptr) {
                 connection->peer_address = peer_text;
+            }
+            sockaddr_in local{};
+            int local_length = sizeof(local);
+            if (getsockname(accepted, reinterpret_cast<sockaddr*>(&local), &local_length) !=
+                SOCKET_ERROR) {
+                char local_text[INET_ADDRSTRLEN]{};
+                if (InetNtopA(AF_INET, &local.sin_addr, local_text, sizeof(local_text)) !=
+                    nullptr) {
+                    connection->local_address = local_text;
+                }
             }
             auto operation = std::make_unique<Operation>();
             operation->kind = OperationKind::Accepted;
@@ -375,7 +386,8 @@ private:
         active_connections_.fetch_add(1U, std::memory_order_relaxed);
         try {
             connection->handler_notified = true;
-            handler_.OnConnected(connection->id, connection->peer_address);
+            handler_.OnConnected(connection->id, connection->peer_address,
+                                 connection->local_address);
         } catch (...) {
             handler_errors_.fetch_add(1U, std::memory_order_relaxed);
             CloseConnection(connection, transport::DisconnectReason::ProtocolError);

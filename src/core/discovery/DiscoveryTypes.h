@@ -33,6 +33,7 @@ struct DiscoveryConfig final {
     std::uint16_t airplay_port{7'000U};
     bool advertise_raop{true};
     bool advertise_airplay{true};
+    bool classic_raop{false};
     bool include_virtual_interfaces{false};
 };
 

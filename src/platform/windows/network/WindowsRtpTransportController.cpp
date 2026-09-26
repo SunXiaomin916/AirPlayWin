@@ -10,6 +10,7 @@
 #include "core/timing/BufferedRtpTimingEngine.h"
 #include "core/timing/DisciplinedRtpTimingEngine.h"
 #include "core/transport/RtpAudioStream.h"
+#include "platform/windows/audio/WindowsAlacDecoder.h"
 #include "platform/windows/timing/QpcClock.h"
 
 namespace airplaywin::windows::network {
@@ -39,7 +40,6 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         .recovery_window_packets = options_.jitter_recovery_window_packets,
     };
     if (request.connection_id == 0U || !request.format.IsValid() ||
-        request.format.codec != airplaywin::audio::AudioCodec::PcmL16BigEndian ||
         !jitter_config.IsValid() ||
         (options_.enable_buffered_timing && options_.enable_ptp_timing) ||
         (options_.enable_ptp_timing && !options_.ptp_clock_domain) ||
@@ -82,6 +82,14 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
             },
             std::make_unique<airplaywin::windows::timing::QpcClockSource>());
     }
+    std::unique_ptr<airplaywin::audio::IAudioDecoder> decoder;
+    if (request.format.codec == airplaywin::audio::AudioCodec::AppleLossless) {
+        decoder = std::make_unique<airplaywin::windows::audio::WindowsAlacDecoder>();
+    } else if (request.format.codec == airplaywin::audio::AudioCodec::PcmL16BigEndian) {
+        decoder = std::make_unique<airplaywin::audio::PcmL16Decoder>();
+    } else {
+        return {.error = AudioTransportSetupError::InvalidRequest};
+    }
     auto stream = std::make_unique<airplaywin::transport::RtpAudioStream>(
         airplaywin::transport::RtpAudioStreamConfig{
             .connection_id = request.connection_id,
@@ -90,8 +98,7 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
             .protocol_latency_frames = request.protocol_latency_frames,
             .allowed_peer_ipv4_network_order = allowed_peer.s_addr,
         },
-        std::make_unique<airplaywin::audio::PcmL16Decoder>(), sink_,
-        std::move(timing_engine));
+        std::move(decoder), sink_, std::move(timing_engine));
     if (!stream->Start()) {
         last_error_ = stream->Diagnostics().last_error;
         return {.error = AudioTransportSetupError::AudioSinkFailure};

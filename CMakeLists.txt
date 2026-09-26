@@ -57,10 +57,12 @@ airplaywin_set_warnings(airplaywin_core)
 add_library(airplaywin_windows STATIC
     src/platform/windows/audio/EndpointLatencyModel.cpp
     src/platform/windows/audio/WasapiAudioOutput.cpp
+    src/platform/windows/audio/WindowsAlacDecoder.cpp
     src/platform/windows/audio/WindowsAudioEngine.cpp
     src/platform/windows/audio/WindowsAudioStreamSink.cpp
     src/platform/windows/audio/WindowsAudioDeviceEnumerator.cpp
     src/platform/windows/audio/WindowsEndpointCalibrationStore.cpp
+    src/platform/windows/crypto/WindowsRaopCryptoProvider.cpp
     src/platform/windows/network/WindowsDiscoveryService.cpp
     src/platform/windows/network/IocpTcpServer.cpp
     src/platform/windows/network/IocpUdpReceiver.cpp
@@ -78,7 +80,7 @@ target_compile_features(airplaywin_windows PUBLIC cxx_std_23)
 target_compile_definitions(airplaywin_windows PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(airplaywin_windows
     PUBLIC airplaywin_core
-    PRIVATE advapi32 avrt dnsapi iphlpapi ole32 oleaut32 powrprof propsys uuid ws2_32
+    PRIVATE advapi32 avrt bcrypt crypt32 dnsapi iphlpapi mfplat mfuuid ole32 oleaut32 powrprof propsys uuid ws2_32
 )
 airplaywin_set_warnings(airplaywin_windows)
 

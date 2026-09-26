@@ -28,7 +28,9 @@ class IControlConnectionHandler {
 public:
     virtual ~IControlConnectionHandler() = default;
 
-    virtual void OnConnected(ConnectionId connection_id, std::string_view peer_address) = 0;
+    virtual void OnConnected(ConnectionId connection_id,
+                             std::string_view peer_address,
+                             std::string_view local_address) = 0;
     [[nodiscard]] virtual ControlReply OnBytes(ConnectionId connection_id,
                                                std::span<const std::byte> bytes) = 0;
     virtual void OnDisconnected(ConnectionId connection_id, DisconnectReason reason) = 0;

@@ -16,6 +16,7 @@ struct ResponseSpec final {
     std::span<const Header> headers{};
     std::span<const std::byte> body{};
     bool close_connection{false};
+    std::string_view server_name{"AirPlayWin/0.12.0"};
 };
 
 [[nodiscard]] std::vector<std::byte> BuildResponse(const Request& request,

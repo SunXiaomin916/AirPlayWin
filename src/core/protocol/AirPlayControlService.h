@@ -5,14 +5,29 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "core/crypto/ISessionAuthenticator.h"
+#include "core/crypto/IRaopCryptoProvider.h"
 #include "core/protocol/IncrementalRtspParser.h"
 #include "core/session/SessionManager.h"
 #include "core/transport/IControlConnectionHandler.h"
 #include "core/transport/IAudioTransportController.h"
 
 namespace airplaywin::protocol {
+
+struct ControlRequestTrace final {
+    std::uint64_t sequence{0U};
+    transport::ConnectionId connection_id{0U};
+    std::string method{};
+    std::string target{};
+    std::string protocol{};
+    std::string content_type{};
+    std::size_t body_bytes{0U};
+    int response_status{0};
+    bool apple_challenge_present{false};
+    bool apple_response_sent{false};
+};
 
 struct ControlDiagnostics final {
     session::SessionDiagnostics sessions{};
@@ -28,6 +43,7 @@ struct ControlDiagnostics final {
     std::uint64_t shutdown_disconnects{0U};
     std::uint64_t protocol_disconnects{0U};
     transport::AudioTransportDiagnostics transport{};
+    std::vector<ControlRequestTrace> recent_requests{};
     std::string last_error{};
 };
 
@@ -37,10 +53,12 @@ public:
         const crypto::ISessionAuthenticator& authenticator,
         session::ActiveSessionPolicy policy = session::ActiveSessionPolicy::RejectNew,
         ParserLimits parser_limits = {},
-        transport::IAudioTransportController* audio_transport = nullptr);
+        transport::IAudioTransportController* audio_transport = nullptr,
+        const crypto::IRaopCryptoProvider* raop_crypto = nullptr);
 
     void OnConnected(transport::ConnectionId connection_id,
-                     std::string_view peer_address) override;
+                     std::string_view peer_address,
+                     std::string_view local_address = {}) override;
     [[nodiscard]] transport::ControlReply OnBytes(
         transport::ConnectionId connection_id,
         std::span<const std::byte> bytes) override;
@@ -52,9 +70,11 @@ public:
 
 private:
     struct ConnectionContext final {
-        explicit ConnectionContext(ParserLimits limits) : parser(limits) {}
+        explicit ConnectionContext(ParserLimits limits, std::string_view local)
+            : parser(limits), local_address(local) {}
         IncrementalRtspParser parser;
         std::optional<audio::EncodedAudioFormat> audio_format{};
+        std::string local_address{};
     };
 
     [[nodiscard]] transport::ControlReply HandleRequest(
@@ -66,11 +86,15 @@ private:
                                                         std::span<const Header> headers = {},
                                                         std::string_view body = {},
                                                         bool close = false) const;
+    void RecordRequestTrace(transport::ConnectionId connection_id,
+                            const Request& request,
+                            const transport::ControlReply& reply);
 
     const crypto::ISessionAuthenticator& authenticator_;
     ParserLimits parser_limits_{};
     session::SessionManager sessions_;
     transport::IAudioTransportController* audio_transport_{nullptr};
+    const crypto::IRaopCryptoProvider* raop_crypto_{nullptr};
     mutable std::mutex mutex_{};
     std::unordered_map<transport::ConnectionId, ConnectionContext> contexts_{};
     std::uint64_t received_requests_{0U};
@@ -84,6 +108,7 @@ private:
     std::uint64_t transport_disconnects_{0U};
     std::uint64_t shutdown_disconnects_{0U};
     std::uint64_t protocol_disconnects_{0U};
+    std::vector<ControlRequestTrace> recent_requests_{};
     std::string last_error_{};
 };
 

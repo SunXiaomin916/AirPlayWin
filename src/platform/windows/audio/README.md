@@ -35,3 +35,9 @@ Phase 11 adds `WindowsEndpointCalibrationStore`, an `IEndpointCalibrationStore` 
 by the current-user registry. It stores manual or measured offsets per complete Windows endpoint
 ID. Fixed-device `--play` and `--serve` runs load a stored value unless the command line supplies
 an explicit override; default-device runs do not reuse a potentially stale endpoint record.
+
+`WindowsAlacDecoder` adapts the inbox Media Foundation Apple Lossless transform to
+`IAudioDecoder`. Classic RAOP AES-128-CBC is performed with CNG immediately before decode;
+the per-session key and scratch storage are cleared on teardown. The RTP worker remains the
+decode boundary, so the WASAPI render callback still performs neither cryptography nor codec
+work.

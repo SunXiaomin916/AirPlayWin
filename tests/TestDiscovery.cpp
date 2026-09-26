@@ -69,6 +69,7 @@ void TestDiscovery() {
         .airplay_port = 7'000U,
         .advertise_raop = true,
         .advertise_airplay = true,
+        .classic_raop = false,
         .include_virtual_interfaces = false,
     };
     const auto services = BuildAirPlayServiceRecords(config, L"Living Room", L"desktop");
@@ -91,6 +92,19 @@ void TestDiscovery() {
     APW_EXPECT(HasProperty(airplay, L"deviceid", L"02:11:22:AA:BB:CC"));
     APW_EXPECT(HasProperty(airplay, L"features", L"0x40440200"));
     APW_EXPECT(HasProperty(airplay, L"protovers", L"1.1"));
+
+    auto classic_config = config;
+    classic_config.advertise_airplay = false;
+    classic_config.classic_raop = true;
+    const auto classic_services =
+        BuildAirPlayServiceRecords(classic_config, L"Living Room Classic", L"desktop");
+    APW_EXPECT(classic_services.size() == 1U);
+    const auto& classic_raop = FindService(classic_services, L"_raop._tcp");
+    APW_EXPECT(HasProperty(classic_raop, L"cn", L"0,1"));
+    APW_EXPECT(HasProperty(classic_raop, L"et", L"0,1"));
+    APW_EXPECT(HasProperty(classic_raop, L"sv", L"false"));
+    APW_EXPECT(HasProperty(classic_raop, L"tp", L"UDP"));
+    APW_EXPECT(HasProperty(classic_raop, L"vs", L"105.1"));
 
     NetworkInterfaceInfo interface_info{
         .ipv4_interface_index = 7U,

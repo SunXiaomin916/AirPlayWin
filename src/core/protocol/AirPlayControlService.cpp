@@ -15,6 +15,44 @@ namespace airplaywin::protocol {
 
 namespace {
 
+constexpr std::size_t kRecentRequestTraceCapacity = 16U;
+
+[[nodiscard]] std::string BoundedCopy(const std::string_view value,
+                                      const std::size_t maximum_bytes) {
+    return std::string{value.substr(0U, maximum_bytes)};
+}
+
+[[nodiscard]] int ResponseStatus(const transport::ControlReply& reply) noexcept {
+    if (reply.writes.empty() || reply.writes.front().empty()) {
+        return 0;
+    }
+    const auto& bytes = reply.writes.front();
+    const std::string_view response{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    const auto first_space = response.find(' ');
+    if (first_space == std::string_view::npos) {
+        return 0;
+    }
+    const auto status_begin = first_space + 1U;
+    const auto status_end = response.find(' ', status_begin);
+    if (status_end == std::string_view::npos) {
+        return 0;
+    }
+    int status = 0;
+    const auto result = std::from_chars(response.data() + status_begin,
+                                        response.data() + status_end, status, 10);
+    return result.ec == std::errc{} && result.ptr == response.data() + status_end ? status : 0;
+}
+
+[[nodiscard]] bool ResponseHasHeader(const transport::ControlReply& reply,
+                                     const std::string_view header_name) noexcept {
+    if (reply.writes.empty() || reply.writes.front().empty()) {
+        return false;
+    }
+    const auto& bytes = reply.writes.front();
+    const std::string_view response{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    return response.find("\r\n" + std::string{header_name} + ": ") != std::string_view::npos;
+}
+
 [[nodiscard]] bool RequestWantsClose(const Request& request) noexcept {
     if (const auto connection = request.HeaderValue("Connection"); connection.has_value()) {
         return EqualsAsciiCaseInsensitive(*connection, "close");
@@ -26,6 +64,15 @@ namespace {
     return target.starts_with("/pair-") || target == "/fp-setup" ||
            target.ends_with("/pair-setup") || target.ends_with("/pair-verify") ||
            target.ends_with("/fp-setup");
+}
+
+[[nodiscard]] bool HasBinaryPlistEnvelope(const Request& request) noexcept {
+    constexpr std::array<std::byte, 8U> kHeader{
+        std::byte{'b'}, std::byte{'p'}, std::byte{'l'}, std::byte{'i'},
+        std::byte{'s'}, std::byte{'t'}, std::byte{'0'}, std::byte{'0'},
+    };
+    return request.body.size() >= kHeader.size() &&
+           std::ranges::equal(kHeader, std::span{request.body}.first(kHeader.size()));
 }
 
 [[nodiscard]] std::string_view SenderIdentity(const Request& request) noexcept {
@@ -103,6 +150,34 @@ namespace {
     return false;
 }
 
+[[nodiscard]] bool HasParameterAssignment(const std::string_view body,
+                                          const std::string_view name) noexcept {
+    std::size_t offset = 0U;
+    while (offset <= body.size()) {
+        const auto line_end = body.find('\n', offset);
+        const auto line = Trim(body.substr(
+            offset, line_end == std::string_view::npos ? std::string_view::npos
+                                                       : line_end - offset));
+        const auto colon = line.find(':');
+        if (colon != std::string_view::npos &&
+            EqualsAsciiCaseInsensitive(Trim(line.substr(0U, colon)), name)) {
+            return true;
+        }
+        if (line_end == std::string_view::npos) {
+            break;
+        }
+        offset = line_end + 1U;
+    }
+    return false;
+}
+
+[[nodiscard]] bool IsMetadataParameterContentType(const std::string_view value) noexcept {
+    return EqualsAsciiCaseInsensitive(value, "application/x-dmap-tagged") ||
+           EqualsAsciiCaseInsensitive(value, "image/jpeg") ||
+           EqualsAsciiCaseInsensitive(value, "image/png") ||
+           EqualsAsciiCaseInsensitive(value, "image/none");
+}
+
 [[nodiscard]] std::string VolumeBody(const double volume_db) {
     std::array<char, 64U> storage{};
     constexpr std::string_view prefix{"volume: "};
@@ -165,16 +240,20 @@ AirPlayControlService::AirPlayControlService(
     const crypto::ISessionAuthenticator& authenticator,
     const session::ActiveSessionPolicy policy,
     const ParserLimits parser_limits,
-    transport::IAudioTransportController* const audio_transport)
+    transport::IAudioTransportController* const audio_transport,
+    const crypto::IRaopCryptoProvider* const raop_crypto)
     : authenticator_(authenticator),
       parser_limits_(parser_limits),
       sessions_(policy),
-      audio_transport_(audio_transport) {}
+      audio_transport_(audio_transport),
+      raop_crypto_(raop_crypto) {}
 
 void AirPlayControlService::OnConnected(const transport::ConnectionId connection_id,
-                                        const std::string_view peer_address) {
+                                        const std::string_view peer_address,
+                                        const std::string_view local_address) {
     std::scoped_lock lock{mutex_};
-    const auto [iterator, inserted] = contexts_.try_emplace(connection_id, parser_limits_);
+    const auto [iterator, inserted] =
+        contexts_.try_emplace(connection_id, parser_limits_, local_address);
     if (!inserted || !sessions_.Create(connection_id, peer_address)) {
         if (inserted) {
             contexts_.erase(iterator);
@@ -209,6 +288,7 @@ transport::ControlReply AirPlayControlService::OnBytes(
         static_cast<void>(sessions_.RecordRequest(connection_id, request.method,
                                                   SenderIdentity(request)));
         auto response = HandleRequest(connection_id, request);
+        RecordRequestTrace(connection_id, request, response);
         for (auto& write : response.writes) {
             reply.writes.push_back(std::move(write));
         }
@@ -254,12 +334,45 @@ transport::ControlReply AirPlayControlService::HandleRequest(
         return reply;
     }
 
-    if (EqualsAsciiCaseInsensitive(request.method, "OPTIONS")) {
-        const std::array headers{Header{
+    if (EqualsAsciiCaseInsensitive(request.method, "POST") && request.target == "/command") {
+        const auto content_type = request.HeaderValue("Content-Type");
+        if (!content_type.has_value() || !EqualsAsciiCaseInsensitive(
+                                             *content_type,
+                                             "application/x-apple-binary-plist")) {
+            ++rejected_requests_;
+            reply.writes.push_back(
+                StatusResponse(request, 415, "Unsupported Media Type", {}, {}, close));
+        } else if (!HasBinaryPlistEnvelope(request)) {
+            ++rejected_requests_;
+            reply.writes.push_back(StatusResponse(request, 400, "Bad Request", {}, {}, close));
+        } else {
+            // AirPlay 2 senders use /command for metadata and playback-state updates. The
+            // audio path does not depend on those values, so acknowledge a structurally
+            // valid plist without retaining its potentially sensitive body.
+            reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
+        }
+    } else if (EqualsAsciiCaseInsensitive(request.method, "OPTIONS")) {
+        std::vector<Header> headers;
+        headers.push_back(Header{
             "Public", audio_transport_ != nullptr
                           ? "ANNOUNCE, OPTIONS, SETUP, RECORD, PAUSE, FLUSH, GET_PARAMETER, "
                             "SET_PARAMETER, TEARDOWN"
-                          : "ANNOUNCE, OPTIONS, GET_PARAMETER, SET_PARAMETER, TEARDOWN"}};
+                          : "ANNOUNCE, OPTIONS, GET_PARAMETER, SET_PARAMETER, TEARDOWN"});
+        if (const auto challenge = request.HeaderValue("Apple-Challenge");
+            challenge.has_value() && raop_crypto_ != nullptr) {
+            const auto& context = contexts_.at(connection_id);
+            const auto response =
+                raop_crypto_->BuildAppleResponse(*challenge, context.local_address);
+            if (!response.has_value()) {
+                ++rejected_requests_;
+                reply.writes.push_back(
+                    StatusResponse(request, 500, "Internal Server Error", {}, {}, close));
+                reply.close_after_writes = close;
+                return reply;
+            }
+            headers.push_back(Header{"Apple-Response", *response});
+            headers.push_back(Header{"Audio-Jack-Status", "connected; type=analog"});
+        }
         reply.writes.push_back(StatusResponse(request, 200, "OK", headers, {}, close));
     } else if (EqualsAsciiCaseInsensitive(request.method, "ANNOUNCE")) {
         const auto content_type = request.HeaderValue("Content-Type");
@@ -273,7 +386,7 @@ transport::ControlReply AirPlayControlService::HandleRequest(
             ++rejected_requests_;
             reply.writes.push_back(StatusResponse(request, 400, "Bad Request", {}, {}, close));
         } else {
-            const auto parsed_audio = ParseSdpAudioDescription(request.BodyText());
+            const auto parsed_audio = ParseSdpAudioSession(request.BodyText());
             if (audio_transport_ != nullptr && !parsed_audio.has_value()) {
                 ++rejected_requests_;
                 reply.writes.push_back(
@@ -281,14 +394,35 @@ transport::ControlReply AirPlayControlService::HandleRequest(
                 reply.close_after_writes = close;
                 return reply;
             }
+            std::optional<audio::EncodedAudioFormat> negotiated_format;
+            if (parsed_audio.has_value()) {
+                negotiated_format = parsed_audio->format;
+                if (parsed_audio->encrypted_aes_key.has_value()) {
+                    const auto material =
+                        raop_crypto_ != nullptr
+                            ? raop_crypto_->DecryptAesMaterial(
+                                  *parsed_audio->encrypted_aes_key,
+                                  *parsed_audio->aes_initialization_vector)
+                            : std::nullopt;
+                    if (!material.has_value()) {
+                        ++rejected_requests_;
+                        reply.writes.push_back(StatusResponse(
+                            request, 400, "Bad Request", {}, {}, close));
+                        reply.close_after_writes = close;
+                        return reply;
+                    }
+                    negotiated_format->encryption_key = material->key;
+                    negotiated_format->encryption_iv = material->iv;
+                }
+            }
             const auto activation = sessions_.Activate(connection_id);
             if (activation == session::ActivationResult::Rejected) {
                 ++rejected_requests_;
                 reply.writes.push_back(
                     StatusResponse(request, 453, "Not Enough Bandwidth", {}, {}, close));
             } else {
-                if (parsed_audio.has_value()) {
-                    contexts_.at(connection_id).audio_format = *parsed_audio;
+                if (negotiated_format.has_value()) {
+                    contexts_.at(connection_id).audio_format = *negotiated_format;
                 }
                 static_cast<void>(
                     sessions_.SetState(connection_id, session::SessionState::Announced));
@@ -319,22 +453,33 @@ transport::ControlReply AirPlayControlService::HandleRequest(
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "SET_PARAMETER")) {
         const auto content_type = request.HeaderValue("Content-Type");
-        const auto volume = content_type.has_value() &&
-                                    EqualsAsciiCaseInsensitive(*content_type, "text/parameters")
-                                ? ParseVolume(request.BodyText())
-                                : std::nullopt;
-        if (!volume.has_value()) {
+        const auto is_text_parameters =
+            content_type.has_value() &&
+            EqualsAsciiCaseInsensitive(*content_type, "text/parameters");
+        const auto has_volume =
+            is_text_parameters && HasParameterAssignment(request.BodyText(), "volume");
+        const auto volume = has_volume ? ParseVolume(request.BodyText()) : std::nullopt;
+        const auto is_metadata =
+            content_type.has_value() && IsMetadataParameterContentType(*content_type);
+        if (!content_type.has_value() || (has_volume && !volume.has_value()) ||
+            (!is_text_parameters && !is_metadata)) {
             ++rejected_requests_;
             reply.writes.push_back(
                 StatusResponse(request, 451, "Invalid Parameter", {}, {}, close));
         } else {
-            static_cast<void>(sessions_.SetVolume(connection_id, *volume));
-            if (audio_transport_ != nullptr) {
-                const auto gain = *volume <= -144.0
-                                      ? 0.0F
-                                      : static_cast<float>(std::pow(10.0, *volume / 20.0));
-                audio_transport_->SetVolume(connection_id, gain);
+            if (volume.has_value()) {
+                static_cast<void>(sessions_.SetVolume(connection_id, *volume));
+                if (audio_transport_ != nullptr) {
+                    const auto gain =
+                        *volume <= -144.0
+                            ? 0.0F
+                            : static_cast<float>(std::pow(10.0, *volume / 20.0));
+                    audio_transport_->SetVolume(connection_id, gain);
+                }
             }
+            // Progress, DMAP metadata, and artwork are control-plane hints.  They
+            // are acknowledged for sender compatibility but deliberately not
+            // retained, logged, or passed into the audio path yet.
             reply.writes.push_back(StatusResponse(request, 200, "OK", {}, {}, close));
         }
     } else if (EqualsAsciiCaseInsensitive(request.method, "TEARDOWN")) {
@@ -529,8 +674,33 @@ ControlDiagnostics AirPlayControlService::Diagnostics() const {
         .transport = audio_transport_ != nullptr
                          ? audio_transport_->Diagnostics()
                          : transport::AudioTransportDiagnostics{},
+        .recent_requests = recent_requests_,
         .last_error = last_error_,
     };
+}
+
+void AirPlayControlService::RecordRequestTrace(
+    const transport::ConnectionId connection_id,
+    const Request& request,
+    const transport::ControlReply& reply) {
+    if (recent_requests_.size() == kRecentRequestTraceCapacity) {
+        recent_requests_.erase(recent_requests_.begin());
+    }
+    const auto content_type = request.HeaderValue("Content-Type");
+    const bool apple_challenge_present = request.HeaderValue("Apple-Challenge").has_value();
+    recent_requests_.push_back(ControlRequestTrace{
+        .sequence = received_requests_,
+        .connection_id = connection_id,
+        .method = BoundedCopy(request.method, 32U),
+        .target = BoundedCopy(request.target, 256U),
+        .protocol = std::string{ToString(request.version)},
+        .content_type = content_type.has_value() ? BoundedCopy(*content_type, 128U)
+                                                 : std::string{},
+        .body_bytes = request.body.size(),
+        .response_status = ResponseStatus(reply),
+        .apple_challenge_present = apple_challenge_present,
+        .apple_response_sent = ResponseHasHeader(reply, "Apple-Response"),
+    });
 }
 
 std::vector<session::SessionSnapshot> AirPlayControlService::Sessions() const {
@@ -551,7 +721,10 @@ std::vector<std::byte> AirPlayControlService::StatusResponse(
                                                .reason = reason,
                                                .headers = headers,
                                                .body = bytes,
-                                               .close_connection = close});
+                                               .close_connection = close,
+                                               .server_name = raop_crypto_ != nullptr
+                                                                  ? "AirTunes/105.1"
+                                                                  : "AirPlayWin/0.12.0"});
 }
 
 }  // namespace airplaywin::protocol

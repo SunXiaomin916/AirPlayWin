@@ -266,6 +266,10 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .packet_processing_maximum_microseconds =
             packet_processing_maximum_microseconds_.load(std::memory_order_relaxed),
         .decoder_errors = decoder_errors_.load(std::memory_order_relaxed),
+        .last_decoder_failure_point =
+            last_decoder_failure_point_.load(std::memory_order_relaxed),
+        .last_decoder_platform_error =
+            last_decoder_platform_error_.load(std::memory_order_relaxed),
         .decode_processing_average_microseconds = decode_average,
         .decode_processing_maximum_microseconds =
             decode_processing_maximum_microseconds_.load(std::memory_order_relaxed),
@@ -416,6 +420,10 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
              .decode_margin_sufficient = decode_margin_sufficient});
         if (result.status != audio::DecodeStatus::Ok || result.frame_count == 0U) {
             decoder_errors_.fetch_add(1U, std::memory_order_relaxed);
+            last_decoder_failure_point_.store(result.failure_point,
+                                              std::memory_order_relaxed);
+            last_decoder_platform_error_.store(result.platform_error,
+                                               std::memory_order_relaxed);
             last_error_.store(6U, std::memory_order_relaxed);
             continue;
         }
