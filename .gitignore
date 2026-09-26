@@ -1,5 +1,8 @@
 /build/
 /out/
+/artifacts/
+__pycache__/
+*.pyc
 /.vs/
 /.docx-review/
 /_CPack_Packages/

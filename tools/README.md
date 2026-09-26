@@ -40,6 +40,13 @@ targets are missed. `Run-S12Regression.ps1` repeats either the complete suite or
 group-clock simulation by count or real elapsed hours and emits JSON. A duration run is a
 software soak, not evidence of acoustic endpoint skew.
 
+`microphone_recorder/recorder_server.py` serves a localhost-only Chrome capture page for
+developer-operated acoustic checks when a controllable native recorder is unavailable. It saves
+mono PCM16 WAVE plus browser-side metrics; `analyze_recording.py` reports duration, peak/RMS/DC,
+clipping, adjacent-sample steps, 100 ms silence windows, and exact-zero runs. The tool requires
+Python 3 and explicit browser microphone permission. Captures are kept under ignored `artifacts/`
+because they may contain private room audio.
+
 `packet_replay/rtp_l16_replay.ps1` is a deterministic RTP/L16 440 Hz sender and network fault
 injector. AirPlayWin analyzes completed PCM16/float32 WAVE captures but deliberately does not
 pretend that QPC-only timing measures driver/DAC/analog latency; capture routing remains a

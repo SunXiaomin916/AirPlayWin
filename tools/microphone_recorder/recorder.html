@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AirPlayWin 默认麦克风测试</title>
+  <style>
+    body { font: 18px system-ui; max-width: 760px; margin: 60px auto; padding: 24px;
+           color: #172033; background: #f4f7fb; }
+    main { background: white; border-radius: 18px; padding: 36px; box-shadow: 0 16px 50px #19304a20; }
+    button { font: inherit; padding: 14px 24px; border: 0; border-radius: 12px;
+             color: white; background: #1769e0; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    #status { margin-top: 24px; font-size: 24px; font-weight: 700; }
+    #countdown { font-size: 64px; font-variant-numeric: tabular-nums; color: #1769e0; }
+    pre { white-space: pre-wrap; background: #eef3f9; padding: 16px; border-radius: 10px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>AirPlayWin 默认麦克风测试</h1>
+  <p>录音仅发送到本机 127.0.0.1，并保存为 30 秒单声道 PCM16 WAVE。</p>
+  <button id="start">开始录制 30 秒</button>
+  <div id="status">READY</div>
+  <div id="countdown">30</div>
+  <pre id="metrics"></pre>
+</main>
+<script>
+const durationSeconds = 30;
+const startButton = document.querySelector('#start');
+const status = document.querySelector('#status');
+const countdown = document.querySelector('#countdown');
+const metricsText = document.querySelector('#metrics');
+
+function encodeWave(chunks, sampleRate) {
+  const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+  const text = (offset, value) => [...value].forEach((character, index) =>
+    view.setUint8(offset + index, character.charCodeAt(0)));
+  text(0, 'RIFF'); view.setUint32(4, 36 + sampleCount * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); text(36, 'data'); view.setUint32(40, sampleCount * 2, true);
+  let offset = 44;
+  for (const chunk of chunks) {
+    for (const value of chunk) {
+      const sample = Math.max(-1, Math.min(1, value));
+      view.setInt16(offset, sample < 0 ? sample * 32768 : sample * 32767, true);
+      offset += 2;
+    }
+  }
+  return new Blob([buffer], {type: 'audio/wav'});
+}
+
+startButton.addEventListener('click', async () => {
+  startButton.disabled = true;
+  status.textContent = 'REQUESTING_MICROPHONE';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {
+      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false
+    }});
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const silent = context.createGain();
+    silent.gain.value = 0;
+    const chunks = [];
+    let peak = 0;
+    let squareSum = 0;
+    let sampleCount = 0;
+    let clippedSamples = 0;
+    processor.onaudioprocess = event => {
+      const samples = new Float32Array(event.inputBuffer.getChannelData(0));
+      chunks.push(samples);
+      for (const sample of samples) {
+        const magnitude = Math.abs(sample);
+        peak = Math.max(peak, magnitude);
+        squareSum += sample * sample;
+        sampleCount++;
+        if (magnitude >= 0.999) clippedSamples++;
+      }
+    };
+    source.connect(processor); processor.connect(silent); silent.connect(context.destination);
+    status.textContent = 'RECORDING';
+    const started = Date.now();
+    const timer = setInterval(() => {
+      countdown.textContent = String(Math.max(0, durationSeconds -
+        Math.floor((Date.now() - started) / 1000)));
+    }, 100);
+    await new Promise(resolve => setTimeout(resolve, durationSeconds * 1000));
+    clearInterval(timer); countdown.textContent = '0'; processor.disconnect(); source.disconnect();
+    stream.getTracks().forEach(track => track.stop()); await context.close();
+    const metrics = {
+      duration_seconds: durationSeconds,
+      sample_rate: context.sampleRate,
+      sample_count: sampleCount,
+      peak_amplitude: peak,
+      rms_amplitude: sampleCount ? Math.sqrt(squareSum / sampleCount) : 0,
+      clipped_samples: clippedSamples,
+      requested_processing: {echo_cancellation: false, noise_suppression: false, auto_gain_control: false},
+      completed_local: new Date().toISOString()
+    };
+    status.textContent = 'SAVING';
+    await Promise.all([
+      fetch('/recording.wav', {method: 'POST', body: encodeWave(chunks, context.sampleRate)}),
+      fetch('/metrics.json', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                              body: JSON.stringify(metrics, null, 2)})
+    ]);
+    metricsText.textContent = JSON.stringify(metrics, null, 2);
+    status.textContent = 'SAVED';
+  } catch (error) {
+    status.textContent = 'ERROR';
+    metricsText.textContent = String(error);
+    startButton.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
