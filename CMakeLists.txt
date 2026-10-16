@@ -116,6 +116,7 @@ add_executable(AirPlayWin
     src/app/ReceiverHost.cpp
     src/app/WaveFileReader.cpp
     "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.rc"
+    cmake/AppManifest.manifest
 )
 target_compile_features(AirPlayWin PRIVATE cxx_std_23)
 target_compile_definitions(AirPlayWin PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -132,6 +133,7 @@ add_executable(AirPlayWinApp WIN32
     src/app/SettingsStore.cpp
     src/app/TestTonePlayer.cpp
     "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinAppVersion.rc"
+    cmake/AppManifest.manifest
 )
 target_include_directories(AirPlayWinApp PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/build/native/include"

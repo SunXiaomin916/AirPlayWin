@@ -99,6 +99,15 @@ void RelaunchElevated(const std::wstring& arguments) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+    // Per-monitor DPI awareness keeps text and UI crisp on scaled displays
+    // (125% / 150% / 200%): without it Windows bitmap-stretches the window,
+    // which is what makes fonts look blurry. The manifest declares the same
+    // setting for the process start; the API covers hosts that ignore it.
+    if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) ==
+        FALSE) {
+        static_cast<void>(SetProcessDPIAware());
+    }
+
     // WebView2 requires a COM-initialized STA on the UI thread.
     static_cast<void>(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
 
