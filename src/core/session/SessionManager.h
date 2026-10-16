@@ -31,7 +31,9 @@ public:
                                  std::uint16_t audio_port,
                                  std::uint16_t control_port,
                                  std::uint16_t timing_port);
-    [[nodiscard]] ActivationResult Activate(transport::ConnectionId connection_id);
+    [[nodiscard]] ActivationResult Activate(
+        transport::ConnectionId connection_id,
+        std::optional<transport::ConnectionId>& displaced_connection);
     void Close(transport::ConnectionId connection_id) noexcept;
 
     [[nodiscard]] std::optional<SessionSnapshot> Get(

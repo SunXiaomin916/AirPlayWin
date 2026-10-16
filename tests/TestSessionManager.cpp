@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 
+#include <optional>
+
 #include "core/session/SessionManager.h"
 
 void TestSessionManager() {
@@ -14,9 +16,13 @@ void TestSessionManager() {
     APW_EXPECT(!rejecting.Create(2U, "duplicate"));
     APW_EXPECT(rejecting.RecordRequest(1U, "ANNOUNCE", "sender-a"));
     APW_EXPECT(rejecting.Transition(1U, SessionState::Connected, SessionState::Announced));
-    APW_EXPECT(rejecting.Activate(1U) == ActivationResult::Activated);
-    APW_EXPECT(rejecting.Activate(1U) == ActivationResult::AlreadyActive);
-    APW_EXPECT(rejecting.Activate(2U) == ActivationResult::Rejected);
+    std::optional<airplaywin::transport::ConnectionId> displaced;
+    APW_EXPECT(rejecting.Activate(1U, displaced) == ActivationResult::Activated);
+    APW_EXPECT(!displaced.has_value());
+    APW_EXPECT(rejecting.Activate(1U, displaced) == ActivationResult::AlreadyActive);
+    APW_EXPECT(!displaced.has_value());
+    APW_EXPECT(rejecting.Activate(2U, displaced) == ActivationResult::Rejected);
+    APW_EXPECT(!displaced.has_value());
     APW_EXPECT(rejecting.SetVolume(1U, -12.5));
     const auto first = rejecting.Get(1U);
     APW_EXPECT(first.has_value());
@@ -24,7 +30,8 @@ void TestSessionManager() {
     APW_EXPECT(first->sender_identity == "sender-a");
     APW_EXPECT_NEAR(first->volume_db, -12.5, 0.0001);
     rejecting.Close(1U);
-    APW_EXPECT(rejecting.Activate(2U) == ActivationResult::Activated);
+    APW_EXPECT(rejecting.Activate(2U, displaced) == ActivationResult::Activated);
+    APW_EXPECT(!displaced.has_value());
     const auto rejecting_diagnostics = rejecting.Diagnostics();
     APW_EXPECT(rejecting_diagnostics.tracked_sessions == 1U);
     APW_EXPECT(rejecting_diagnostics.rejected_sessions == 1U);
@@ -32,8 +39,11 @@ void TestSessionManager() {
     SessionManager preempting{ActiveSessionPolicy::PreemptExisting};
     APW_EXPECT(preempting.Create(10U, "a"));
     APW_EXPECT(preempting.Create(11U, "b"));
-    APW_EXPECT(preempting.Activate(10U) == ActivationResult::Activated);
-    APW_EXPECT(preempting.Activate(11U) == ActivationResult::PreemptedExisting);
+    APW_EXPECT(preempting.Activate(10U, displaced) == ActivationResult::Activated);
+    APW_EXPECT(!displaced.has_value());
+    APW_EXPECT(preempting.Activate(11U, displaced) == ActivationResult::PreemptedExisting);
+    APW_EXPECT(displaced.has_value());
+    APW_EXPECT(*displaced == 10U);
     const auto preempted = preempting.Get(10U);
     APW_EXPECT(preempted.has_value());
     APW_EXPECT(preempted->state == SessionState::Closing);

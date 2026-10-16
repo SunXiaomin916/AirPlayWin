@@ -178,6 +178,16 @@ constexpr std::size_t kRecentRequestTraceCapacity = 16U;
            EqualsAsciiCaseInsensitive(value, "image/none");
 }
 
+// Media types may carry parameters ("application/sdp; charset=utf-8").
+// Compare the media type only, before the first ';'.
+[[nodiscard]] bool IsMediaType(const std::string_view value,
+                               const std::string_view media_type) noexcept {
+    const auto parameters = value.find(';');
+    return EqualsAsciiCaseInsensitive(
+        value.substr(0, parameters == std::string_view::npos ? value.size() : parameters),
+        media_type);
+}
+
 [[nodiscard]] std::string VolumeBody(const double volume_db) {
     std::array<char, 64U> storage{};
     constexpr std::string_view prefix{"volume: "};
@@ -285,6 +295,7 @@ transport::ControlReply AirPlayControlService::OnBytes(
     }
     for (const auto& request : batch.requests) {
         ++received_requests_;
+        ++context->second.completed_requests;
         static_cast<void>(sessions_.RecordRequest(connection_id, request.method,
                                                   SenderIdentity(request)));
         auto response = HandleRequest(connection_id, request);
@@ -376,8 +387,7 @@ transport::ControlReply AirPlayControlService::HandleRequest(
         reply.writes.push_back(StatusResponse(request, 200, "OK", headers, {}, close));
     } else if (EqualsAsciiCaseInsensitive(request.method, "ANNOUNCE")) {
         const auto content_type = request.HeaderValue("Content-Type");
-        if (!content_type.has_value() ||
-            !EqualsAsciiCaseInsensitive(*content_type, "application/sdp")) {
+        if (!content_type.has_value() || !IsMediaType(*content_type, "application/sdp")) {
             ++rejected_requests_;
             reply.writes.push_back(
                 StatusResponse(request, 415, "Unsupported Media Type", {}, {}, close));
@@ -415,12 +425,19 @@ transport::ControlReply AirPlayControlService::HandleRequest(
                     negotiated_format->encryption_iv = material->iv;
                 }
             }
-            const auto activation = sessions_.Activate(connection_id);
+            std::optional<transport::ConnectionId> displaced_connection;
+            const auto activation = sessions_.Activate(connection_id, displaced_connection);
             if (activation == session::ActivationResult::Rejected) {
                 ++rejected_requests_;
                 reply.writes.push_back(
                     StatusResponse(request, 453, "Not Enough Bandwidth", {}, {}, close));
             } else {
+                if (activation == session::ActivationResult::PreemptedExisting &&
+                    displaced_connection.has_value() && audio_transport_ != nullptr) {
+                    // A preempted sender must stop hearing its own audio and
+                    // release the transport before the new client's SETUP.
+                    audio_transport_->Teardown(*displaced_connection);
+                }
                 if (negotiated_format.has_value()) {
                     contexts_.at(connection_id).audio_format = *negotiated_format;
                 }
@@ -654,6 +671,39 @@ void AirPlayControlService::OnDisconnected(const transport::ConnectionId connect
     }
     contexts_.erase(connection_id);
     sessions_.Close(connection_id);
+}
+
+bool AirPlayControlService::AllowIdleClose(
+    const transport::ConnectionId connection_id) noexcept {
+    std::scoped_lock lock{mutex_};
+    // A live session (announced, ready, streaming, or paused) must survive
+    // control-plane silence: audio flows over UDP, and a paused sender may
+    // not send anything for minutes. Fresh, closing, closed, or errored
+    // connections may still be reaped by the idle scan.
+    const auto snapshot = sessions_.Get(connection_id);
+    if (!snapshot.has_value()) {
+        return true;
+    }
+    switch (snapshot->state) {
+    case session::SessionState::Connected:
+    case session::SessionState::Closing:
+    case session::SessionState::Closed:
+    case session::SessionState::Error:
+        return true;
+    case session::SessionState::Announced:
+    case session::SessionState::Ready:
+    case session::SessionState::Streaming:
+    case session::SessionState::Paused:
+        return false;
+    }
+    return true;
+}
+
+bool AirPlayControlService::HasCompletedRequest(
+    const transport::ConnectionId connection_id) const noexcept {
+    std::scoped_lock lock{mutex_};
+    const auto context = contexts_.find(connection_id);
+    return context == contexts_.end() || context->second.completed_requests != 0U;
 }
 
 ControlDiagnostics AirPlayControlService::Diagnostics() const {

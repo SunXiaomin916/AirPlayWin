@@ -101,8 +101,11 @@ bool SessionManager::SetStream(const transport::ConnectionId connection_id,
     return true;
 }
 
-ActivationResult SessionManager::Activate(const transport::ConnectionId connection_id) {
+ActivationResult SessionManager::Activate(
+    const transport::ConnectionId connection_id,
+    std::optional<transport::ConnectionId>& displaced_connection) {
     std::scoped_lock lock{mutex_};
+    displaced_connection.reset();
     const auto requested = sessions_.find(connection_id);
     if (requested == sessions_.end()) {
         return ActivationResult::UnknownSession;
@@ -124,6 +127,7 @@ ActivationResult SessionManager::Activate(const transport::ConnectionId connecti
         previous->second.owns_playback = false;
         previous->second.state = SessionState::Closing;
     }
+    displaced_connection = playback_owner_;
     playback_owner_ = connection_id;
     requested->second.owns_playback = true;
     ++preempted_sessions_;

@@ -97,11 +97,14 @@ struct AlacFmtp final {
 
 [[nodiscard]] std::optional<AlacFmtp> ParseAlacFmtp(const std::string_view text) {
     const auto fields = SplitWhitespace(text);
-    if (fields.size() != 11U) {
+    // Apple's canonical fmtp line has exactly 11 values, but real-world
+    // senders have shipped lines with trailing extras; accept and ignore
+    // anything beyond the 11th field instead of rejecting the ANNOUNCE.
+    if (fields.size() < 11U) {
         return std::nullopt;
     }
     std::array<std::uint64_t, 11U> values{};
-    for (std::size_t index = 0U; index < fields.size(); ++index) {
+    for (std::size_t index = 0U; index < values.size(); ++index) {
         if (!ParseUnsigned(fields[index], values[index])) {
             return std::nullopt;
         }

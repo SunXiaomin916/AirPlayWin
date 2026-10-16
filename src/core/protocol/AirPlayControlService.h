@@ -64,6 +64,9 @@ public:
         std::span<const std::byte> bytes) override;
     void OnDisconnected(transport::ConnectionId connection_id,
                         transport::DisconnectReason reason) override;
+    [[nodiscard]] bool AllowIdleClose(transport::ConnectionId connection_id) noexcept override;
+    [[nodiscard]] bool HasCompletedRequest(
+        transport::ConnectionId connection_id) const noexcept override;
 
     [[nodiscard]] ControlDiagnostics Diagnostics() const;
     [[nodiscard]] std::vector<session::SessionSnapshot> Sessions() const;
@@ -75,6 +78,7 @@ private:
         IncrementalRtspParser parser;
         std::optional<audio::EncodedAudioFormat> audio_format{};
         std::string local_address{};
+        std::uint64_t completed_requests{0U};
     };
 
     [[nodiscard]] transport::ControlReply HandleRequest(

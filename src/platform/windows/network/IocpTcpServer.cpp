@@ -200,6 +200,7 @@ private:
         std::string peer_address{};
         std::string local_address{};
         std::chrono::steady_clock::time_point last_activity{std::chrono::steady_clock::now()};
+        std::chrono::steady_clock::time_point created_at{std::chrono::steady_clock::now()};
         std::deque<std::vector<std::byte>> pending_writes{};
         std::size_t send_offset{0U};
         std::size_t pending_write_bytes{0U};
@@ -267,9 +268,18 @@ private:
                 if (!stop_requested_.load(std::memory_order_acquire)) {
                     transport_errors_.fetch_add(1U, std::memory_order_relaxed);
                     last_error_.store(error, std::memory_order_relaxed);
+                    // Transient failures (descriptor exhaustion, aborted
+                    // connections, brief network loss) must not permanently
+                    // stop accepting. Retry with a bounded failure budget so
+                    // a genuinely dead listener still terminates the loop.
+                    if (++consecutive_accept_failures_ < kMaximumAcceptFailures) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                        continue;
+                    }
                 }
                 break;
             }
+            consecutive_accept_failures_ = 0U;
             u_long blocking = 0U;
             static_cast<void>(ioctlsocket(accepted, FIONBIO, &blocking));
             auto connection = std::make_shared<Connection>();
@@ -564,8 +574,20 @@ private:
         const auto now = std::chrono::steady_clock::now();
         std::vector<std::shared_ptr<Connection>> expired;
         for (const auto& [id, connection] : connections_) {
-            static_cast<void>(id);
-            if (!connection->closed && now - connection->last_activity >= options_.idle_timeout) {
+            if (connection->closed) {
+                continue;
+            }
+            // Connections that never completed a single request get a hard
+            // deadline from connect time regardless of traffic, so a
+            // slow-loris peer cannot refresh the timer one byte at a time.
+            const bool never_completed = !handler_.HasCompletedRequest(id);
+            if (never_completed && now - connection->created_at >= options_.idle_timeout) {
+                expired.push_back(connection);
+                continue;
+            }
+            if (now - connection->last_activity >= options_.idle_timeout &&
+                handler_.AllowIdleClose(id)) {
+                // No veto: the handler has no session it wants to keep.
                 expired.push_back(connection);
             }
         }
@@ -614,6 +636,8 @@ private:
     std::atomic<std::uint64_t> transport_errors_{0U};
     std::atomic<std::uint64_t> handler_errors_{0U};
     std::atomic<std::uint32_t> last_error_{0U};
+    std::uint32_t consecutive_accept_failures_{0U};
+    static constexpr std::uint32_t kMaximumAcceptFailures = 50U;
 };
 
 IocpTcpServer::IocpTcpServer(transport::IControlConnectionHandler& handler)
