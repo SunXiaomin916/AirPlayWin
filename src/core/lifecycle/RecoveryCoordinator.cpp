@@ -3,6 +3,7 @@
 namespace airplaywin::lifecycle {
 
 void RecoveryCoordinator::OnSuspend() noexcept {
+    std::scoped_lock lock{mutex_};
     if (diagnostics_.state == ReceiverRuntimeState::Stopped) {
         return;
     }
@@ -15,6 +16,7 @@ void RecoveryCoordinator::OnSuspend() noexcept {
 }
 
 void RecoveryCoordinator::OnResume() noexcept {
+    std::scoped_lock lock{mutex_};
     if (diagnostics_.state == ReceiverRuntimeState::Stopped) {
         return;
     }
@@ -27,6 +29,7 @@ void RecoveryCoordinator::OnResume() noexcept {
 }
 
 void RecoveryCoordinator::RequestRecovery(const std::uint32_t reason_error) noexcept {
+    std::scoped_lock lock{mutex_};
     if (diagnostics_.state == ReceiverRuntimeState::Stopped ||
         diagnostics_.state == ReceiverRuntimeState::Suspended) {
         return;
@@ -40,6 +43,7 @@ void RecoveryCoordinator::RequestRecovery(const std::uint32_t reason_error) noex
 
 void RecoveryCoordinator::RecordRecoveryResult(const bool succeeded,
                                                 const std::uint32_t error) noexcept {
+    std::scoped_lock lock{mutex_};
     if (diagnostics_.state != ReceiverRuntimeState::RecoveryPending) {
         return;
     }
@@ -55,18 +59,22 @@ void RecoveryCoordinator::RecordRecoveryResult(const bool succeeded,
 }
 
 void RecoveryCoordinator::Stop() noexcept {
+    std::scoped_lock lock{mutex_};
     diagnostics_.state = ReceiverRuntimeState::Stopped;
 }
 
 bool RecoveryCoordinator::RecoveryRequired() const noexcept {
+    std::scoped_lock lock{mutex_};
     return diagnostics_.state == ReceiverRuntimeState::RecoveryPending;
 }
 
 bool RecoveryCoordinator::IsSuspended() const noexcept {
+    std::scoped_lock lock{mutex_};
     return diagnostics_.state == ReceiverRuntimeState::Suspended;
 }
 
 RecoveryDiagnostics RecoveryCoordinator::Diagnostics() const noexcept {
+    std::scoped_lock lock{mutex_};
     return diagnostics_;
 }
 

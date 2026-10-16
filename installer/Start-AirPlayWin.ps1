@@ -27,6 +27,13 @@ if ($running) {
 
 $logRoot = Join-Path $env:LOCALAPPDATA "AirPlayWin\Logs"
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+# The receiver logs every diagnostics interval while it runs; without a cap
+# an autostarted receiver fills the disk after a few months. Keep the most
+# recent 30 days of logs and prune anything older on every start.
+$pruneDeadline = (Get-Date).AddDays(-30)
+Get-ChildItem -LiteralPath $logRoot -Filter "receiver-*.log" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt $pruneDeadline } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdoutLog = Join-Path $logRoot "receiver-$timestamp.log"
 $safeName = $Name.Replace('"', '')

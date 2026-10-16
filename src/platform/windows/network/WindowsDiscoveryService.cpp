@@ -122,6 +122,12 @@ public:
         if (wait_status == WAIT_TIMEOUT) {
             const DWORD cancel_status = DnsServiceRegisterCancel(&cancel_);
             if (cancel_status == ERROR_SUCCESS || cancel_status == ERROR_CANCELLED) {
+                // The DNS-SD runtime still invokes the completion callback
+                // (with ERROR_CANCELLED) after a successful cancel. Wait for
+                // it so the callback cannot run against this object after
+                // the caller destroys it.
+                static_cast<void>(WaitForSingleObject(
+                    completion_event_.Get(), kRegistrationTimeoutMilliseconds));
                 return ERROR_TIMEOUT;
             }
             wait_status = WaitForSingleObject(completion_event_.Get(), INFINITE);

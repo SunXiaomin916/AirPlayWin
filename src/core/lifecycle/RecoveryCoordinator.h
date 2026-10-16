@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 
 namespace airplaywin::lifecycle {
 
@@ -37,6 +38,10 @@ public:
     [[nodiscard]] RecoveryDiagnostics Diagnostics() const noexcept;
 
 private:
+    // Guards the state machine. Current callers are serialized by the
+    // application loop, but the coordinator must stay correct if a platform
+    // callback thread ever records events directly.
+    mutable std::mutex mutex_{};
     RecoveryDiagnostics diagnostics_{};
 };
 

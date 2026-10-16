@@ -1373,6 +1373,7 @@ void PrintControlDiagnostics(
                << L", recording=" << (transport.recording ? L"yes" : L"no")
                << L", packets=" << transport.datagrams_received
                << L", retransmitted=" << transport.retransmitted_packets
+               << L", resend_req=" << transport.resend_requests_sent
                << L", stale_timeline=" << transport.timeline_rejected_packets
                << L", decoded=" << transport.decoded_packets
                << L", concealed=" << transport.concealed_packets
@@ -1711,6 +1712,14 @@ void PrintRecoveryDiagnostics(
                    : (airplay_error != 0U ? airplay_error : raop_error);
     };
 
+    airplaywin::lifecycle::RecoveryCoordinator recovery;
+    ScopedConsoleControlHandler console_control;
+    ReceiverStopEvent stop_event;
+    if (!stop_event.Available()) {
+        std::wcerr << L"Unable to create the receiver stop signal.\n";
+        return 27;
+    }
+
     const auto start_result = start_services();
     if (start_result != 0) {
         std::wcerr << L"Failed to start receiver services; stage=" << start_result
@@ -1724,16 +1733,9 @@ void PrintRecoveryDiagnostics(
                       L"error="
                    << power_monitor.Diagnostics().last_error << L".\n";
     }
-    airplaywin::lifecycle::RecoveryCoordinator recovery;
-    ScopedConsoleControlHandler console_control;
-    ReceiverStopEvent stop_event;
-    if (!stop_event.Available()) {
-        std::wcerr << L"Unable to create the receiver stop signal.\n";
-        stop_services();
-        return 27;
-    }
     bool services_running = true;
     auto next_recovery_attempt = std::chrono::steady_clock::time_point{};
+    std::uint32_t consecutive_recovery_failures = 0U;
 
     std::wcout << L"AirPlayWin " AIRPLAYWIN_VERSION_STRING_W
                << L" receiver ready: RAOP TCP " << command.raop_port;
@@ -1751,6 +1753,9 @@ void PrintRecoveryDiagnostics(
                        ? L"on (receive-only UDP 319/320 servo; an external group "
                          L"coordinator may publish the S11 RTP/PTP phase anchor).\n"
                        : L"off.\n");
+    std::wcout << L"  Discovery requires a Windows Private network profile. If devices cannot "
+                  L"see or connect to this receiver, run \"AirPlayWin --install-firewall-rules\" "
+                  L"once as Administrator and check the network profile in Windows Settings.\n";
     const auto deadline =
         command.run_until_stopped
             ? std::chrono::steady_clock::time_point::max()
@@ -1798,7 +1803,17 @@ void PrintRecoveryDiagnostics(
             const auto recovery_result = start_services();
             services_running = recovery_result == 0;
             recovery.RecordRecoveryResult(services_running, runtime_error());
-            next_recovery_attempt = now + std::chrono::seconds{1};
+            if (!services_running) {
+                // Exponential backoff so a persistent failure (e.g. Wi-Fi
+                // still down after resume) does not retry at a fixed 1 Hz
+                // forever: 1, 2, 4, 8, 16, 30, 30, ... seconds.
+                ++consecutive_recovery_failures;
+                const auto shift = std::min(consecutive_recovery_failures, 5U);
+                const auto delay_seconds = std::min<std::uint32_t>(30U, 1U << shift);
+                next_recovery_attempt = now + std::chrono::seconds{delay_seconds};
+            } else {
+                consecutive_recovery_failures = 0U;
+            }
             if (services_running) {
                 std::wcout << L"Receiver services recovered and DNS-SD was republished.\n";
             }
