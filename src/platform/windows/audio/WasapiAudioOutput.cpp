@@ -470,6 +470,21 @@ public:
 
     [[nodiscard]] airplaywin::audio::AudioDiagnosticsSnapshot Diagnostics() const {
         std::scoped_lock lifecycle_lock{lifecycle_mutex_};
+        // Read the live per-app session volume so external changes (the
+        // user dragging the AirPlayWin entry in the Windows Volume Mixer)
+        // are reflected instead of the last internally requested value.
+        float session_volume_scalar =
+            desired_session_volume_.load(std::memory_order_acquire);
+        {
+            std::scoped_lock volume_lock{session_volume_mutex_};
+            if (session_volume_ != nullptr) {
+                float actual = 0.0F;
+                if (SUCCEEDED(session_volume_->GetMasterVolume(&actual)) &&
+                    std::isfinite(actual)) {
+                    session_volume_scalar = actual;
+                }
+            }
+        }
         const auto click_pop = guard_ != nullptr ? guard_->ClickPop()
                                                  : airplaywin::audio::ClickPopDiagnostics{};
         airplaywin::audio::AudioDiagnosticsSnapshot snapshot{
@@ -533,8 +548,7 @@ public:
             .current_audio_epoch = current_epoch_.load(std::memory_order_acquire),
             .session_volume_active =
                 session_volume_active_.load(std::memory_order_acquire),
-            .session_volume_scalar =
-                desired_session_volume_.load(std::memory_order_acquire),
+            .session_volume_scalar = session_volume_scalar,
             .session_volume_error = static_cast<std::uint32_t>(
                 session_volume_error_.load(std::memory_order_acquire)),
             .last_output_error =

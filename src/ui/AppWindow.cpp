@@ -713,6 +713,10 @@ private:
             SendResponse(message.id, response, true);
         } else if (message.command == L"setVolume") {
             const auto gain = ReadFloatField(message.payload, L"gain");
+            std::wcerr << L"setVolume: parsed gain=" << gain << L" payload="
+                       << Utf8ToWide(message.payload).substr(
+                              0U, std::min<std::size_t>(60U, message.payload.size()))
+                       << L"\n";
             settings_.volume = std::clamp(gain, 0.0F, 1.0F);
             static_cast<void>(receiver_->SetVolume(settings_.volume));
             static_cast<void>(settings_store_.Save(settings_));
@@ -807,15 +811,31 @@ private:
         if (position == std::string::npos) {
             return {};
         }
-        const auto open = payload.find('"', position + key_text.size() + 3U);
-        if (open == std::string::npos) {
+        const auto colon = payload.find(':', position + key_text.size());
+        if (colon == std::string::npos) {
             return {};
         }
-        const auto close = payload.find('"', open + 1U);
-        if (close == std::string::npos) {
+        std::size_t value_begin = colon + 1U;
+        while (value_begin < payload.size() &&
+               (payload[value_begin] == ' ' || payload[value_begin] == '\t')) {
+            ++value_begin;
+        }
+        if (value_begin >= payload.size()) {
             return {};
         }
-        return Utf8ToWide(payload.substr(open + 1U, close - open - 1U));
+        if (payload[value_begin] == '"') {
+            const auto close = payload.find('"', value_begin + 1U);
+            if (close == std::string::npos) {
+                return {};
+            }
+            return Utf8ToWide(payload.substr(value_begin + 1U, close - value_begin - 1U));
+        }
+        // Numeric and boolean values are unquoted; read up to the next
+        // separator.
+        const auto end_position = payload.find_first_of(",}", value_begin);
+        const auto end =
+            end_position == std::string::npos ? payload.size() : end_position;
+        return Utf8ToWide(payload.substr(value_begin, end - value_begin));
     }
 
     [[nodiscard]] std::int64_t ReadIntField(const std::string& payload,
@@ -1138,6 +1158,8 @@ private:
                 std::string(output.output_mode_fallback ? "true" : "false");
         json += ",\"sessionVolumeActive\":" +
                 std::string(output.session_volume_active ? "true" : "false");
+        json += ",\"sessionVolumeScalar\":" +
+                std::to_string(output.session_volume_scalar);
         json += ",\"transitionState\":";
         AppendJsonString(json, TransitionStateName(output.transition_state));
         json += ",\"clickPopEvents\":" + std::to_string(output.click_pop_events);

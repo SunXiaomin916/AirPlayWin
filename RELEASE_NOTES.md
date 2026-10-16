@@ -1,3 +1,28 @@
+# AirPlayWin 1.1.2
+
+AirPlayWin 1.1.2 fixes the volume control synchronization:
+
+- The GUI volume slider now follows the live value in both directions:
+  adjusting the volume on the iPhone updates the slider (via the session
+  volume), and dragging the AirPlayWin entry in the Windows Volume Mixer
+  is read back from the per-app audio session every diagnostics tick
+  instead of reporting the last internally requested value.
+- The volume set from the GUI applies even when no sender session is
+  active (previously the sink silently dropped it until a session
+  configured the audio path); the requested volume is applied to the
+  per-app session as soon as the endpoint opens.
+- Fixed numeric/boolean payload parsing in the GUI bridge (the volume,
+  port, offset, and toggle commands now read their values correctly).
+
+Note on direction: the AirPlay protocol's volume control is one-way
+(sender to receiver). The receiver cannot drive the volume indicator on
+the iPhone, but changes made on the phone are reflected in the app and in
+Windows immediately, and changes made in the app or Windows apply to
+playback right away.
+
+See 1.1.0 below for the graphical application feature set and 1.1.1 for
+the DPI fix.
+
 # AirPlayWin 1.1.1
 
 AirPlayWin 1.1.1 fixes per-monitor DPI awareness: both executables now embed a PerMonitorV2 manifest (the GUI also declares it at startup), so text renders crisply on 125% / 150% / 200% scaled displays instead of being bitmap-stretched. See the 1.1.0 notes below for the graphical application feature set.

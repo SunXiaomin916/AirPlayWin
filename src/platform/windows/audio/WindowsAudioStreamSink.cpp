@@ -199,9 +199,11 @@ void WindowsAudioStreamSink::HardResync() noexcept {
 
 void WindowsAudioStreamSink::SetVolume(const float linear_gain) noexcept {
     std::scoped_lock lock{mutex_};
-    if (configured_) {
-        engine_.SetVolume(linear_gain);
-    }
+    // Apply even before a session configures the sink: the output records
+    // the requested volume and applies it to the per-app session as soon
+    // as the endpoint opens, so the GUI volume control works with and
+    // without an active sender.
+    engine_.SetVolume(linear_gain);
 }
 
 void WindowsAudioStreamSink::Stop() noexcept {

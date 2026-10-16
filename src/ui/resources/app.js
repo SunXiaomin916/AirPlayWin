@@ -76,7 +76,8 @@ const mock = {
     servoState: "未启用", driftPpm: 0, rateCorrection: 1,
     underruns: 0, renderedFrames: 0, queueFrames: 0, latencyUs: 0,
     endpointFormat: "Float 32-bit", periodFrames: 0, outputMode: "共享模式",
-    lowLatencyActive: false, outputFallback: false, sessionVolumeActive: false,
+    lowLatencyActive: false, outputFallback: false, sessionVolumeActive: true,
+    sessionVolumeScalar: 1.0,
     transitionState: "已停止", clickPopEvents: 0, clickPopMaxStep: 0,
     invalidNumeric: 0, clipped: 0, dcEvents: 0, deviceSwitches: 0,
     deviceRecoveries: 0, deviceRecoveryFailures: 0, hardResyncs: 0,
@@ -221,8 +222,9 @@ function renderSettings(settings) {
   $("adv-ptp-if").value = settings.ptpInterfaceAddress;
   $("adv-minimize-tray").checked = settings.minimizeToTray;
   $("adv-diag-interval").value = settings.diagnosticsIntervalSeconds;
-  $("volume-slider").value = Math.round(settings.volume * 100);
-  $("volume-value").textContent = Math.round(settings.volume * 100) + "%";
+  // The volume slider is driven by renderReceiver: it follows the sender's
+  // volume while a session is active and the live Windows session volume
+  // otherwise, so it must not be overwritten here from the saved setting.
   selectDevice(settings.outputDeviceId, settings.followDefaultDevice);
 }
 
@@ -264,11 +266,31 @@ function renderReceiver(r) {
   $("d-recovery").textContent = `${r.recoveryAttempts} / ${r.recoveryFailures}`;
   $("d-discovery").textContent = `${r.nameConflicts} / ${r.registrationFailures}`;
   $("d-parse").textContent = `${r.parseErrors} / ${r.rejectedRequests}`;
+
+  // Volume slider follows the live value: the sender's volume while a
+  // session is active, the Windows per-app session volume otherwise.
+  if (!volumeDragging) {
+    let targetGain = null;
+    if (r.hasSession && typeof r.volumeDb === "number" && r.volumeDb > -144) {
+      targetGain = Math.pow(10, r.volumeDb / 20);
+    } else if (typeof r.sessionVolumeScalar === "number") {
+      targetGain = r.sessionVolumeScalar;
+    }
+    if (targetGain !== null) {
+      const slider = $("volume-slider");
+      const targetPercent = Math.round(targetGain * 100);
+      if (Math.abs(targetPercent - Number(slider.value)) >= 1) {
+        slider.value = targetPercent;
+        $("volume-value").textContent = targetPercent + "%";
+      }
+    }
+  }
 }
 
 /* ---------- 设备下拉 ---------- */
 
 let deviceList = [];
+let volumeDragging = false;
 
 function selectDevice(id, followDefault) {
   const select = $("audio-device");
@@ -370,6 +392,8 @@ $("home-tone").addEventListener("click", () => {
   document.querySelector('.nav-item[data-page="audio"]').click();
 });
 
+$("volume-slider").addEventListener("pointerdown", () => { volumeDragging = true; });
+$("volume-slider").addEventListener("pointerup", () => { volumeDragging = false; });
 $("volume-slider").addEventListener("input", (event) => {
   const gain = Number(event.target.value) / 100;
   $("volume-value").textContent = event.target.value + "%";
@@ -527,6 +551,15 @@ window.__runBridgeTest = async function () {
     results.push(["setConfig", !!config.ok]);
     const volume = await sendCommand("setVolume", { gain: 0.5 });
     results.push(["setVolume", !!volume.ok]);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const stateAfterVolume = await sendCommand("getState", {});
+    const actualVolume = stateAfterVolume.ok && stateAfterVolume.result &&
+        stateAfterVolume.result.receiver
+        ? stateAfterVolume.result.receiver.sessionVolumeScalar
+        : null;
+    results.push(["getState.sessionVolume",
+      actualVolume !== null && Math.abs(actualVolume - 0.5) < 0.05,
+      "actual=" + actualVolume]);
     const devices = await sendCommand("listDevices", {});
     results.push(["listDevices", !!(devices.ok && Array.isArray(devices.result))]);
     const interfaces = await sendCommand("listInterfaces", {});
