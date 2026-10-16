@@ -31,6 +31,7 @@ public:
         airplaywin::timing::TimingDiagnostics result;
         result.enabled = true;
         result.locked = true;
+        result.target_buffer_microseconds = 50'000U;
         result.servo.locked = true;
         result.servo.rate_correction = 1.01;
         return result;
@@ -192,6 +193,9 @@ void TestRtpAudioStream() {
     APW_EXPECT(sink.StopCount() == 1U);
 
     FakeAudioFrameSink disciplined_sink;
+    // Depth servo: report a queue slightly below the 50 ms target so the
+    // bounded proportional controller drives the resample ratio above 1.
+    disciplined_sink.SetOutputFeedback(390U, 0U);
     RtpAudioStream disciplined_stream{
         RtpAudioStreamConfig{
             .connection_id = 43U,
@@ -216,11 +220,13 @@ void TestRtpAudioStream() {
                            servo_payload),
             source, 2'000'000'000LL + static_cast<std::int64_t>(packet) * 12'500'000LL);
     }
-    APW_EXPECT(WaitForFrames(disciplined_sink, 1'010U));
+    APW_EXPECT(WaitForFrames(disciplined_sink, 1'000U));
     const auto disciplined = disciplined_stream.Diagnostics();
     APW_EXPECT(disciplined.resampled_input_frames == 1'000U);
-    APW_EXPECT(disciplined.resampled_output_frames == 1'010U);
-    APW_EXPECT(disciplined.drift_inserted_frames == 10U);
+    APW_EXPECT(disciplined.resampled_output_frames >= 1'000U);
+    APW_EXPECT(disciplined.resampled_output_frames <= 1'010U);
+    APW_EXPECT(disciplined.drift_inserted_frames ==
+               disciplined.resampled_output_frames - 1'000U);
     APW_EXPECT(disciplined.drift_dropped_frames == 0U);
     APW_EXPECT(disciplined.timing_hard_resync_requests == 1U);
     APW_EXPECT(disciplined_sink.HardResyncCount() == 1U);

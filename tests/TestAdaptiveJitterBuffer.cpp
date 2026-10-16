@@ -30,7 +30,10 @@ void InsertPacket(airplaywin::transport::RtpJitterBuffer& buffer,
 void PopPacket(airplaywin::transport::RtpJitterBuffer& buffer,
                const std::uint16_t expected_sequence) {
     airplaywin::transport::BufferedRtpPacket output;
-    APW_EXPECT(buffer.Pop(output) == airplaywin::transport::JitterPopKind::Packet);
+    // "Now" far beyond every synthetic arrival time so any loss-gap hold
+    // window has already elapsed and pops behave as immediate decisions.
+    APW_EXPECT(buffer.Pop(output, 4'000'000'000LL) ==
+               airplaywin::transport::JitterPopKind::Packet);
     APW_EXPECT(output.sequence_number == expected_sequence);
 }
 
@@ -167,7 +170,8 @@ void TestAdaptiveJitterBuffer() {
     InsertPacket(loss, 17U, 8'360U, 3'070'000'000LL);
     InsertPacket(loss, 18U, 8'840U, 3'080'000'000LL);
     airplaywin::transport::BufferedRtpPacket missing;
-    APW_EXPECT(loss.Pop(missing) == airplaywin::transport::JitterPopKind::Missing);
+    APW_EXPECT(loss.Pop(missing, 4'000'000'000LL) ==
+               airplaywin::transport::JitterPopKind::Missing);
     APW_EXPECT(missing.sequence_number == 14U);
     diagnostics = loss.Diagnostics();
     APW_EXPECT(diagnostics.lost_packets == 1U);

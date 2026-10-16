@@ -1,5 +1,7 @@
 #pragma once
 
+#include <WinSock2.h>
+
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -87,6 +89,7 @@ private:
     };
 
     void TeardownLocked() noexcept;
+    void SendResendRequest(std::uint16_t first_sequence, std::uint16_t count) noexcept;
 
     airplaywin::audio::IAudioFrameSink& sink_;
     WindowsRtpTransportOptions options_{};
@@ -98,6 +101,10 @@ private:
     std::unique_ptr<IocpUdpReceiver> audio_receiver_{};
     std::unique_ptr<IocpUdpReceiver> control_receiver_{};
     std::unique_ptr<IocpUdpReceiver> timing_receiver_{};
+    SOCKET resend_socket_{INVALID_SOCKET};
+    sockaddr_in resend_target_{};
+    bool resend_target_valid_{false};
+    std::atomic<std::uint64_t> resend_send_errors_{0U};
     std::uint32_t last_error_{0U};
 };
 

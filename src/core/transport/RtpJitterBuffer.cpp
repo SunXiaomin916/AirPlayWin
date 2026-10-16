@@ -37,6 +37,8 @@ bool RtpJitterBuffer::Insert(const RtpPacketView& packet,
         buffered_packets_ = 0U;
         next_sequence_ = new_next;
         warmed_up_ = false;
+        gap_open_ = false;
+        pending_resend_.reset();
         RecordDisturbanceLocked(2U);
     }
     auto& slot = slots_[extended_sequence % slots_.size()];
@@ -65,6 +67,27 @@ bool RtpJitterBuffer::Insert(const RtpPacketView& packet,
     }
     ++buffered_packets_;
     UpdateJitter(packet.timestamp, arrival_time_nanoseconds);
+    // Open a loss gap once enough later packets have arrived that plain
+    // reordering is no longer plausible, but only when the next slot is
+    // genuinely empty. The drain then holds for the resend window so a
+    // retransmitted copy can still be replayed in place.
+    if (!gap_open_ && highest_sequence_ > next_sequence_ &&
+        highest_sequence_ - next_sequence_ >= config_.reorder_depth_packets &&
+        !slots_[next_sequence_ % slots_.size()].occupied) {
+        gap_open_ = true;
+        gap_first_sequence_ = next_sequence_;
+        gap_deadline_ns_ =
+            arrival_time_nanoseconds +
+            static_cast<std::int64_t>(config_.resend_wait_milliseconds) * 1'000'000LL;
+        const auto sequence = static_cast<std::uint16_t>(next_sequence_ & 0xFFFFU);
+        if (pending_resend_.has_value() &&
+            static_cast<std::uint16_t>(pending_resend_->first + pending_resend_->second) ==
+                sequence) {
+            ++pending_resend_->second;
+        } else {
+            pending_resend_ = std::pair{sequence, static_cast<std::uint16_t>(1U)};
+        }
+    }
     if (config_.adaptive_enabled && ++adaptation_observation_count_ >= 16U) {
         adaptation_observation_count_ = 0U;
         UpdateAdaptiveTargetLocked();
@@ -72,7 +95,8 @@ bool RtpJitterBuffer::Insert(const RtpPacketView& packet,
     return true;
 }
 
-JitterPopKind RtpJitterBuffer::Pop(BufferedRtpPacket& packet) noexcept {
+JitterPopKind RtpJitterBuffer::Pop(BufferedRtpPacket& packet,
+                                   const std::int64_t now_nanoseconds) noexcept {
     std::scoped_lock lock{mutex_};
     if (!sequence_initialized_) {
         return JitterPopKind::Waiting;
@@ -93,15 +117,41 @@ JitterPopKind RtpJitterBuffer::Pop(BufferedRtpPacket& packet) noexcept {
         slot.occupied = false;
         --buffered_packets_;
         ++next_sequence_;
+        if (gap_open_ && next_sequence_ > gap_first_sequence_) {
+            // The held packet (or its retransmitted copy) arrived in time.
+            gap_open_ = false;
+        }
         ++emitted_packets_;
         RecordStablePacketLocked();
         return JitterPopKind::Packet;
     }
-    // Keep the configured reorder depth after warm-up as well. Audio and retransmission
-    // packets arrive on separate UDP sockets, so a later sequence can legitimately win the
-    // scheduling race. Declaring loss with only one packet ahead makes that retransmission
-    // late before it has a chance to enter the buffer.
-    if (buffered_packets_ >= current_target_packets_ && highest_sequence_ > next_sequence_) {
+    if (highest_sequence_ > next_sequence_ &&
+        highest_sequence_ - next_sequence_ >= config_.reorder_depth_packets) {
+        if (!gap_open_ || next_sequence_ != gap_first_sequence_) {
+            // Open the loss gap. It may have opened at insert time already;
+            // this path covers gaps that only became valid after a pop
+            // advanced past the previously occupied slot.
+            gap_open_ = true;
+            gap_first_sequence_ = next_sequence_;
+            gap_deadline_ns_ =
+                now_nanoseconds +
+                static_cast<std::int64_t>(config_.resend_wait_milliseconds) * 1'000'000LL;
+            const auto sequence = static_cast<std::uint16_t>(next_sequence_ & 0xFFFFU);
+            if (pending_resend_.has_value() &&
+                static_cast<std::uint16_t>(pending_resend_->first +
+                                           pending_resend_->second) == sequence) {
+                ++pending_resend_->second;
+            } else {
+                pending_resend_ = std::pair{sequence, static_cast<std::uint16_t>(1U)};
+            }
+        }
+        if (next_sequence_ == gap_first_sequence_ &&
+            now_nanoseconds < gap_deadline_ns_) {
+            // Inside the retransmission wait window. Packets beyond the gap
+            // stay buffered so the retransmitted copy can be replayed in place.
+            return JitterPopKind::Waiting;
+        }
+        gap_open_ = false;
         packet = {};
         packet.extended_sequence_number = next_sequence_;
         packet.sequence_number = static_cast<std::uint16_t>(next_sequence_ & 0xFFFFU);
@@ -111,6 +161,37 @@ JitterPopKind RtpJitterBuffer::Pop(BufferedRtpPacket& packet) noexcept {
         return JitterPopKind::Missing;
     }
     return JitterPopKind::Waiting;
+}
+
+bool RtpJitterBuffer::HasAvailable(const std::int64_t now_nanoseconds) const noexcept {
+    std::scoped_lock lock{mutex_};
+    if (!sequence_initialized_ || buffered_packets_ == 0U) {
+        return false;
+    }
+    if (!warmed_up_) {
+        return buffered_packets_ >= current_target_packets_;
+    }
+    const auto& slot = slots_[next_sequence_ % slots_.size()];
+    if (slot.occupied && slot.packet.extended_sequence_number == next_sequence_) {
+        return true;
+    }
+    if (gap_open_ && next_sequence_ == gap_first_sequence_) {
+        return now_nanoseconds >= gap_deadline_ns_;
+    }
+    return highest_sequence_ > next_sequence_ &&
+           highest_sequence_ - next_sequence_ >= config_.reorder_depth_packets;
+}
+
+bool RtpJitterBuffer::TakePendingResendRequest(std::uint16_t& first_sequence,
+                                               std::uint16_t& count) noexcept {
+    std::scoped_lock lock{mutex_};
+    if (!pending_resend_.has_value()) {
+        return false;
+    }
+    first_sequence = pending_resend_->first;
+    count = pending_resend_->second;
+    pending_resend_.reset();
+    return true;
 }
 
 void RtpJitterBuffer::ReportDownstreamUnderrun(const std::uint64_t count) noexcept {
@@ -214,6 +295,10 @@ void RtpJitterBuffer::ResetTimelineLocked() noexcept {
     sequence_initialized_ = false;
     warmed_up_ = false;
     transit_initialized_ = false;
+    gap_open_ = false;
+    gap_first_sequence_ = 0U;
+    gap_deadline_ns_ = 0;
+    pending_resend_.reset();
     next_sequence_ = 0U;
     highest_sequence_ = 0U;
     jitter_base_timestamp_ = 0U;

@@ -8,7 +8,10 @@
 
 namespace airplaywin::transport {
 
-inline constexpr std::size_t kMaxRtpPayloadBytes = 4U * 1'024U;
+// Matches the largest realistic RAOP/ALAC packet (e.g. 4096 frames of
+// 24-bit stereo at 96 kHz) while keeping the preallocated jitter-buffer
+// slots bounded. The UDP receive path must accept at least this size.
+inline constexpr std::size_t kMaxRtpPayloadBytes = 32U * 1'024U;
 
 enum class RtpParseError : std::uint8_t {
     PacketTooShort,

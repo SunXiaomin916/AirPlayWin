@@ -3,6 +3,9 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 
+#include <array>
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <utility>
 
@@ -59,6 +62,27 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         return {.error = AudioTransportSetupError::InvalidRequest};
     }
 
+    // Classic RAOP retransmission: the sender retransmits only when asked.
+    // Prepare the bounded send path to the client's negotiated control port.
+    resend_target_valid_ = false;
+    resend_target_ = {};
+    SOCKET resend_socket = INVALID_SOCKET;
+    if (request.client_control_port != 0U) {
+        sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(request.client_control_port);
+        target.sin_addr.s_addr = allowed_peer.s_addr;
+        resend_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (resend_socket != INVALID_SOCKET) {
+            const DWORD send_timeout_ms = 100U;
+            static_cast<void>(setsockopt(resend_socket, SOL_SOCKET, SO_SNDTIMEO,
+                                         reinterpret_cast<const char*>(&send_timeout_ms),
+                                         static_cast<int>(sizeof(send_timeout_ms))));
+            resend_target_ = target;
+            resend_target_valid_ = true;
+        }
+    }
+
     std::unique_ptr<airplaywin::timing::ITimingEngine> timing_engine;
     if (options_.enable_ptp_timing) {
         timing_engine =
@@ -90,6 +114,13 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
     } else {
         return {.error = AudioTransportSetupError::InvalidRequest};
     }
+    std::function<void(std::uint16_t, std::uint16_t)> resend_requester;
+    if (resend_socket != INVALID_SOCKET) {
+        resend_requester = [this](const std::uint16_t first_sequence,
+                                  const std::uint16_t count) {
+            SendResendRequest(first_sequence, count);
+        };
+    }
     auto stream = std::make_unique<airplaywin::transport::RtpAudioStream>(
         airplaywin::transport::RtpAudioStreamConfig{
             .connection_id = request.connection_id,
@@ -97,10 +128,14 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
             .jitter_buffer = jitter_config,
             .protocol_latency_frames = request.protocol_latency_frames,
             .allowed_peer_ipv4_network_order = allowed_peer.s_addr,
+            .resend_requester = std::move(resend_requester),
         },
         std::move(decoder), sink_, std::move(timing_engine));
     if (!stream->Start()) {
         last_error_ = stream->Diagnostics().last_error;
+        if (resend_socket != INVALID_SOCKET) {
+            closesocket(resend_socket);
+        }
         return {.error = AudioTransportSetupError::AudioSinkFailure};
     }
 
@@ -114,7 +149,8 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         .bind_address = options_.bind_address,
         .port = 0U,
         .receive_depth = 4U,
-        .max_datagram_bytes = 8U * 1'024U,
+        // Maximum UDP payload; large enough for any negotiated ALAC packet.
+        .max_datagram_bytes = 65'507U,
     };
     if (!audio_receiver->Start(receiver_options) ||
         !control_receiver->Start(receiver_options) ||
@@ -129,9 +165,13 @@ airplaywin::transport::AudioTransportSetupResult WindowsRtpTransportController::
         audio_receiver->Stop();
         control_handler_.SetStream(nullptr);
         stream->Stop();
+        if (resend_socket != INVALID_SOCKET) {
+            closesocket(resend_socket);
+        }
         return {.error = AudioTransportSetupError::SocketFailure};
     }
 
+    resend_socket_ = resend_socket;
     connection_id_ = request.connection_id;
     stream_ = std::move(stream);
     audio_receiver_ = std::move(audio_receiver);
@@ -267,14 +307,48 @@ void WindowsRtpTransportController::TeardownLocked() noexcept {
     if (audio_receiver_) {
         audio_receiver_->Stop();
     }
+    // The stream worker owns the resend requester; join it before the
+    // socket and target are released.
     if (stream_) {
         stream_->Stop();
     }
+    if (resend_socket_ != INVALID_SOCKET) {
+        closesocket(resend_socket_);
+        resend_socket_ = INVALID_SOCKET;
+    }
+    resend_target_valid_ = false;
+    resend_target_ = {};
     timing_receiver_.reset();
     control_receiver_.reset();
     audio_receiver_.reset();
     stream_.reset();
     connection_id_ = 0U;
+}
+
+void WindowsRtpTransportController::SendResendRequest(
+    const std::uint16_t first_sequence, const std::uint16_t count) noexcept {
+    if (resend_socket_ == INVALID_SOCKET || !resend_target_valid_) {
+        return;
+    }
+    // Classic RAOP resend request: 0x80, 0xD5, own sequence 1, then the
+    // first missing sequence number and the count of consecutive packets.
+    const std::array<std::byte, 8U> request{
+        std::byte{0x80},
+        std::byte{0xD5},
+        std::byte{0x00},
+        std::byte{0x01},
+        std::byte{static_cast<std::uint8_t>(first_sequence >> 8U)},
+        std::byte{static_cast<std::uint8_t>(first_sequence & 0xFFU)},
+        std::byte{static_cast<std::uint8_t>(count >> 8U)},
+        std::byte{static_cast<std::uint8_t>(count & 0xFFU)},
+    };
+    const auto sent = sendto(resend_socket_, reinterpret_cast<const char*>(request.data()),
+                             static_cast<int>(request.size()), 0,
+                             reinterpret_cast<const sockaddr*>(&resend_target_),
+                             static_cast<int>(sizeof(resend_target_)));
+    if (sent == SOCKET_ERROR) {
+        resend_send_errors_.fetch_add(1U, std::memory_order_relaxed);
+    }
 }
 
 }  // namespace airplaywin::windows::network

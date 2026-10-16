@@ -236,6 +236,7 @@ AudioTransportDiagnostics RtpAudioStream::Diagnostics() const noexcept {
         .unexpected_payload_packets =
             unexpected_payload_packets_.load(std::memory_order_relaxed),
         .retransmitted_packets = retransmitted_packets_.load(std::memory_order_relaxed),
+        .resend_requests_sent = resend_requests_sent_.load(std::memory_order_relaxed),
         .timeline_rejected_packets =
             timeline_rejected_packets_.load(std::memory_order_relaxed),
         .timeline_resets = timeline_resets_.load(std::memory_order_relaxed),
@@ -327,13 +328,30 @@ bool RtpAudioStream::IsAtOrAfterTimeline(const RtpPacketView& packet) const noex
                                      static_cast<std::uint32_t>(timestamp_anchor)) >= 0;
 }
 
+namespace {
+
+[[nodiscard]] std::int64_t NowNanoseconds() noexcept {
+    return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+}  // namespace
+
 void RtpAudioStream::WorkerLoop() noexcept {
     while (running_.load(std::memory_order_acquire)) {
         {
             std::unique_lock state_lock{state_mutex_};
-            wake_.wait_for(state_lock, std::chrono::milliseconds{2}, [this] {
-                return !running_.load(std::memory_order_acquire) ||
-                       recording_.load(std::memory_order_acquire);
+            // Sleep while idle or while the buffer has nothing to deliver.
+            // The predicate queries the jitter buffer directly so a packet
+            // inserted between the check and the wait is never missed. The
+            // 20 ms timeout only bounds the latency of a loss-gap deadline
+            // expiry; waiting on the predicate keeps this thread at ~0% CPU
+            // between packets.
+            wake_.wait_for(state_lock, std::chrono::milliseconds{20}, [this] {
+                if (!running_.load(std::memory_order_acquire) ||
+                    !recording_.load(std::memory_order_acquire)) {
+                    return false;
+                }
+                return jitter_buffer_.HasAvailable(NowNanoseconds());
             });
         }
         if (!running_.load(std::memory_order_acquire)) {
@@ -345,12 +363,27 @@ void RtpAudioStream::WorkerLoop() noexcept {
     }
 }
 
+void RtpAudioStream::DrainResendRequests() noexcept {
+    std::uint16_t first_sequence = 0U;
+    std::uint16_t count = 0U;
+    while (jitter_buffer_.TakePendingResendRequest(first_sequence, count)) {
+        if (config_.resend_requester) {
+            config_.resend_requester(first_sequence, count);
+            resend_requests_sent_.fetch_add(1U, std::memory_order_relaxed);
+        }
+    }
+}
+
 void RtpAudioStream::ProcessAvailablePackets() noexcept {
     for (;;) {
         if (!running_.load(std::memory_order_acquire) ||
             !recording_.load(std::memory_order_acquire)) {
-            return;
+            break;
         }
+        // Ask the sender for retransmission of any loss gap the jitter
+        // buffer opened, outside the processing lock so the (bounded) send
+        // can never stall pause/stop/flush.
+        DrainResendRequests();
         std::scoped_lock processing_lock{processing_mutex_};
         // Pause/stop can flip the atomic state after the loop-level check while
         // this worker is waiting for the transition mutex. Recheck under the
@@ -358,7 +391,7 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
         // and rejected by the paused sink before resume can consume it.
         if (!running_.load(std::memory_order_acquire) ||
             !recording_.load(std::memory_order_acquire)) {
-            return;
+            break;
         }
         const auto feedback = sink_.Feedback();
         if (feedback.underrun_count > observed_sink_underruns_) {
@@ -367,9 +400,9 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             observed_sink_underruns_ = feedback.underrun_count;
         }
         BufferedRtpPacket packet;
-        const auto kind = jitter_buffer_.Pop(packet);
+        const auto kind = jitter_buffer_.Pop(packet, NowNanoseconds());
         if (kind == JitterPopKind::Waiting) {
-            return;
+            break;
         }
 
         const auto decode_started = std::chrono::steady_clock::now();
@@ -391,7 +424,16 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
             const auto frames = have_decoded_frame_ ? last_frame_count_
                                                     : config_.format.nominal_frames_per_packet;
             result = decoder_->ConcealLoss(frames, decode_storage_);
-            rtp_timestamp = have_decoded_frame_ ? last_rtp_timestamp_ + last_frame_count_ : 0U;
+            // A first-packet concealment before any decoded frame maps to the
+            // timeline anchor when one exists, so timing engines can schedule
+            // it instead of dropping the unmappable zero timestamp.
+            const auto anchor = timestamp_anchor_.load(std::memory_order_relaxed);
+            rtp_timestamp =
+                have_decoded_frame_
+                    ? last_rtp_timestamp_ + last_frame_count_
+                    : ((anchor & (std::uint64_t{1U} << 32U)) != 0U
+                           ? static_cast<std::uint32_t>(anchor)
+                           : 0U);
             if (result.status == audio::DecodeStatus::Ok) {
                 concealed_packets_.fetch_add(1U, std::memory_order_relaxed);
                 concealed_frames_.fetch_add(result.frame_count, std::memory_order_relaxed);
@@ -438,9 +480,30 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
                 drift_resampler_.Reset();
                 timing_hard_resync_requests_.fetch_add(1U, std::memory_order_relaxed);
             }
+            // Closed-loop depth servo. The timing engine already corrects
+            // the schedule for the disciplined clock's drift, but two
+            // independent crystals remain: the device's render clock and
+            // the sender's audio clock. A slow proportional controller on
+            // the sink queue depth keeps the feed rate matched to the
+            // drain; it never performs hard inserts/drops beyond the tiny
+            // bounded ratio.
+            double resample_ratio = 1.0;
+            const auto timing_diagnostics = timing_engine_->Diagnostics();
+            if (timing_diagnostics.locked &&
+                timing_diagnostics.target_buffer_microseconds != 0U) {
+                const auto target_frames =
+                    static_cast<double>(timing_diagnostics.target_buffer_microseconds) *
+                    static_cast<double>(config_.format.sample_rate) / 1'000'000.0;
+                const auto depth_error =
+                    target_frames - static_cast<double>(feedback.queued_frames);
+                const auto desired =
+                    1.0 + std::clamp(0.05 * depth_error / target_frames, -0.002, 0.002);
+                depth_servo_ratio_ += 0.1 * (desired - depth_servo_ratio_);
+                resample_ratio = depth_servo_ratio_;
+            }
             const auto resampled = drift_resampler_.Process(
                 submitted_samples, result.frame_count, config_.format.channel_count,
-                timing_engine_->RateCorrection(), resample_storage_);
+                resample_ratio, resample_storage_);
             if (!resampled.succeeded) {
                 decoder_errors_.fetch_add(1U, std::memory_order_relaxed);
                 last_error_.store(8U, std::memory_order_relaxed);
@@ -486,6 +549,7 @@ void RtpAudioStream::ProcessAvailablePackets() noexcept {
         last_rtp_timestamp_ = rtp_timestamp;
         last_frame_count_ = result.frame_count;
     }
+    DrainResendRequests();
 }
 
 bool RtpAudioStream::SubmitWithBackpressure(
@@ -495,7 +559,8 @@ bool RtpAudioStream::SubmitWithBackpressure(
     }
     sink_backpressure_events_.fetch_add(1U, std::memory_order_relaxed);
     for (std::uint32_t retry = 0U; retry < 100U; ++retry) {
-        if (!running_.load(std::memory_order_acquire)) {
+        if (!running_.load(std::memory_order_acquire) ||
+            !recording_.load(std::memory_order_acquire)) {
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -503,6 +568,14 @@ bool RtpAudioStream::SubmitWithBackpressure(
             return true;
         }
     }
+    // The queue stayed stuck above its high-water target for 100 ms. Dropping
+    // this frame alone would splice the next one directly onto the previous
+    // waveform (an audible click that bypasses the transition guard). A hard
+    // resync fades out, purges the backlog, and fades back in on fresh PCM
+    // instead. The timing engine's mapping is untouched, so the stream keeps
+    // its presentation timeline.
+    sink_.HardResync();
+    backpressure_resync_events_.fetch_add(1U, std::memory_order_relaxed);
     return false;
 }
 

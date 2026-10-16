@@ -68,6 +68,7 @@ struct AudioTransportDiagnostics final {
     std::uint64_t unexpected_source_packets{0U};
     std::uint64_t unexpected_payload_packets{0U};
     std::uint64_t retransmitted_packets{0U};
+    std::uint64_t resend_requests_sent{0U};
     std::uint64_t timeline_rejected_packets{0U};
     std::uint64_t timeline_resets{0U};
     bool has_sequence_anchor{false};

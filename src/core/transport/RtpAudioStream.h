@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -23,6 +24,11 @@ struct RtpAudioStreamConfig final {
     RtpJitterBufferConfig jitter_buffer{};
     std::uint32_t protocol_latency_frames{0U};
     std::uint32_t allowed_peer_ipv4_network_order{0U};
+    // Invoked from the worker thread when a run of missing sequence numbers
+    // is declared so the platform layer can ask the sender for
+    // retransmission (classic RAOP resend request).
+    std::function<void(std::uint16_t first_sequence, std::uint16_t count)>
+        resend_requester{};
 };
 
 class RtpAudioStream final : public IAudioStream {
@@ -51,6 +57,7 @@ public:
 private:
     void WorkerLoop() noexcept;
     void ProcessAvailablePackets() noexcept;
+    void DrainResendRequests() noexcept;
     void ResetPacketTimeline(const AudioTimelineAnchor& anchor) noexcept;
     [[nodiscard]] bool IsAtOrAfterTimeline(const RtpPacketView& packet) const noexcept;
     [[nodiscard]] bool SubmitWithBackpressure(const audio::DecodedAudioFrameView& frame) noexcept;
@@ -84,6 +91,7 @@ private:
     std::atomic<std::uint64_t> unexpected_source_packets_{0U};
     std::atomic<std::uint64_t> unexpected_payload_packets_{0U};
     std::atomic<std::uint64_t> retransmitted_packets_{0U};
+    std::atomic<std::uint64_t> resend_requests_sent_{0U};
     std::atomic<std::uint64_t> timeline_rejected_packets_{0U};
     std::atomic<std::uint64_t> timeline_resets_{0U};
     std::atomic<std::uint32_t> sequence_anchor_{0U};
@@ -108,7 +116,9 @@ private:
     std::atomic<std::uint64_t> decode_processing_maximum_microseconds_{0U};
     std::atomic<std::uint64_t> decode_budget_miss_count_{0U};
     std::atomic<std::uint64_t> sink_backpressure_events_{0U};
+    std::atomic<std::uint64_t> backpressure_resync_events_{0U};
     std::uint64_t observed_sink_underruns_{0U};
+    double depth_servo_ratio_{1.0};
     std::atomic<std::uint32_t> last_error_{0U};
 };
 

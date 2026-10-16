@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "core/transport/RtpPacket.h"
@@ -14,6 +16,13 @@ struct RtpJitterBufferConfig final {
     std::size_t capacity_packets{256U};
     std::size_t target_packets{4U};
     std::uint32_t clock_rate{44'100U};
+    // Fixed reorder depth used to open a loss gap. Independent of the
+    // adaptive target so a single lost packet is detected immediately
+    // instead of stalling the drain until `target_packets` pile up.
+    std::size_t reorder_depth_packets{2U};
+    // How long to hold an open gap waiting for the retransmitted copy
+    // before declaring the packet lost. 0 disables the hold.
+    std::uint32_t resend_wait_milliseconds{40U};
     bool adaptive_enabled{false};
     std::size_t minimum_target_packets{2U};
     std::size_t maximum_target_packets{0U};
@@ -29,6 +38,9 @@ struct RtpJitterBufferConfig final {
         const auto maximum_target = EffectiveMaximumTargetPackets();
         return capacity_packets >= 4U && capacity_packets <= 4'096U &&
                target_packets >= 1U && target_packets < capacity_packets &&
+               reorder_depth_packets >= 2U && reorder_depth_packets <= 64U &&
+               reorder_depth_packets < capacity_packets &&
+               resend_wait_milliseconds <= 2'000U &&
                clock_rate >= 8'000U && clock_rate <= 384'000U &&
                (!adaptive_enabled ||
                 (minimum_target_packets >= 1U &&
@@ -102,7 +114,15 @@ public:
 
     [[nodiscard]] bool Insert(const RtpPacketView& packet,
                               std::int64_t arrival_time_nanoseconds) noexcept;
-    [[nodiscard]] JitterPopKind Pop(BufferedRtpPacket& packet) noexcept;
+    [[nodiscard]] JitterPopKind Pop(BufferedRtpPacket& packet,
+                                    std::int64_t now_nanoseconds) noexcept;
+    // True when the next Pop would return Packet or Missing. Used by the
+    // stream worker to sleep on the condition variable instead of polling.
+    [[nodiscard]] bool HasAvailable(std::int64_t now_nanoseconds) const noexcept;
+    // Pops one queued retransmission request, if any. Requests are queued
+    // when a loss gap opens; the caller sends them to the sender.
+    [[nodiscard]] bool TakePendingResendRequest(std::uint16_t& first_sequence,
+                                                std::uint16_t& count) noexcept;
     void ReportDownstreamUnderrun(std::uint64_t count = 1U) noexcept;
     void UpdateRuntimeConditions(AdaptiveJitterRuntimeConditions conditions) noexcept;
     void Flush() noexcept;
@@ -131,6 +151,10 @@ private:
     bool sequence_initialized_{false};
     bool warmed_up_{false};
     bool transit_initialized_{false};
+    bool gap_open_{false};
+    std::uint64_t gap_first_sequence_{0U};
+    std::int64_t gap_deadline_ns_{0};
+    std::optional<std::pair<std::uint16_t, std::uint16_t>> pending_resend_{};
     std::uint64_t next_sequence_{0U};
     std::uint64_t highest_sequence_{0U};
     std::uint32_t jitter_base_timestamp_{0U};
