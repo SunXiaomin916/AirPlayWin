@@ -1,3 +1,7 @@
+# AirPlayWin 1.1.1
+
+AirPlayWin 1.1.1 fixes per-monitor DPI awareness: both executables now embed a PerMonitorV2 manifest (the GUI also declares it at startup), so text renders crisply on 125% / 150% / 200% scaled displays instead of being bitmap-stretched. See the 1.1.0 notes below for the graphical application feature set.
+
 # AirPlayWin 1.1.0
 
 AirPlayWin 1.1.0 adds the graphical application: a native Win32 window hosting a WebView2
