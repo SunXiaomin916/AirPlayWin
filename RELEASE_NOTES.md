@@ -1,3 +1,29 @@
+# AirPlayWin 1.1.3
+
+AirPlayWin 1.1.3 is a general software-quality pass over the graphical application:
+
+- The tray menu's start/stop now runs through the same async lifecycle as the
+  UI buttons (previously it blocked the UI thread on WASAPI/DNS-SD setup).
+- The saved volume is applied as soon as the receiver starts, so a volume
+  change made while the receiver was stopped takes effect on the next
+  start; the volume slider no longer snaps to zero from an empty snapshot
+  while the receiver is stopped.
+- Volume slider changes no longer rewrite the settings file on every step
+  (the Windows per-app session volume is system-persisted); the file is
+  written once at shutdown.
+- The "project home page" button in About now opens the browser (the
+  openUrl bridge command was missing).
+- If WebView2 cannot initialize, a clear error dialog explains the cause
+  instead of leaving an empty window.
+- Per-monitor DPI changes reposition the window and notify WebView2 so the
+  UI stays crisp when moved between monitors with different scaling.
+- Minimizing to the tray shows an in-app notice; the automated bridge test
+  restores the settings it modified, and logs are pruned to 30 days even
+  when the app is launched directly.
+
+See 1.1.0 below for the feature set, 1.1.1 for the DPI fix, and 1.1.2 for
+volume synchronization.
+
 # AirPlayWin 1.1.2
 
 AirPlayWin 1.1.2 fixes the volume control synchronization:

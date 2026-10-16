@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 1.1.2 LANGUAGES CXX)
+project(AirPlayWin VERSION 1.1.3 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")

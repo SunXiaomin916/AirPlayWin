@@ -267,9 +267,11 @@ function renderReceiver(r) {
   $("d-discovery").textContent = `${r.nameConflicts} / ${r.registrationFailures}`;
   $("d-parse").textContent = `${r.parseErrors} / ${r.rejectedRequests}`;
 
-  // Volume slider follows the live value: the sender's volume while a
-  // session is active, the Windows per-app session volume otherwise.
-  if (!volumeDragging) {
+  // Volume slider follows the live value while the receiver runs: the
+  // sender's volume during a session, the Windows per-app session volume
+  // otherwise. When the receiver is stopped the slider keeps the saved
+  // setting instead of being driven by the empty snapshot.
+  if (!volumeDragging && state && state.running) {
     let targetGain = null;
     if (r.hasSession && typeof r.volumeDb === "number" && r.volumeDb > -144) {
       targetGain = Math.pow(10, r.volumeDb / 20);
@@ -386,7 +388,10 @@ $("btn-power").addEventListener("click", () => {
 $("home-start").addEventListener("click", () => {
   if (state && !state.running) sendCommand("start", {}).then(() => sendCommand("getState", {}));
 });
-$("btn-tray").addEventListener("click", () => sendCommand("hideToTray", {}));
+$("btn-tray").addEventListener("click", () => {
+  sendCommand("hideToTray", {});
+  toast("已最小化到系统托盘，接收器继续在后台运行。双击托盘图标可重新打开。", "ok");
+});
 
 $("home-tone").addEventListener("click", () => {
   document.querySelector('.nav-item[data-page="audio"]').click();

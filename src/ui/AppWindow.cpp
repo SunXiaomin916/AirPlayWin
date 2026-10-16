@@ -226,6 +226,7 @@ public:
          const std::filesystem::path log_directory, const bool test_bridge)
         : instance_(instance),
           settings_(std::move(settings)),
+          settings_at_start_(settings_),
           ui_directory_(ui_directory),
           log_directory_(log_directory),
           settings_store_(log_directory.parent_path() / "settings.json"),
@@ -233,6 +234,31 @@ public:
           tone_thread_active_(false),
           test_bridge_(test_bridge) {
         static_cast<void>(RedirectDiagnosticsToFile(log_directory));
+        PruneOldLogs(log_directory);
+    }
+
+    // Keeps the log directory bounded when the app is launched directly
+    // (the installer script prunes on its own start path).
+    static void PruneOldLogs(const std::filesystem::path& directory) noexcept {
+        try {
+            const auto deadline =
+                std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * 30};
+            for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                const auto name = entry.path().filename().wstring();
+                if (!name.starts_with(L"app-") && !name.starts_with(L"receiver-")) {
+                    continue;
+                }
+                if (entry.last_write_time() < deadline) {
+                    std::error_code ignored;
+                    std::filesystem::remove(entry.path(), ignored);
+                }
+            }
+        } catch (...) {
+            // Log pruning is best-effort.
+        }
     }
 
     ~Impl() {
@@ -365,6 +391,20 @@ private:
                 static_cast<void>(webview_controller_->put_Bounds(bounds));
             }
             return 0;
+        case WM_DPICHANGED: {
+            // Per-monitor V2: reposition/resize for the new DPI and tell
+            // WebView2 so it re-renders crisply on the new monitor.
+            const auto* suggested = reinterpret_cast<RECT*>(lparam);
+            static_cast<void>(SetWindowPos(
+                hwnd, nullptr, suggested->left, suggested->top,
+                suggested->right - suggested->left, suggested->bottom - suggested->top,
+                SWP_NOZORDER | SWP_NOACTIVATE));
+            if (webview_controller_ != nullptr) {
+                static_cast<void>(
+                    webview_controller_->NotifyParentWindowPositionChanged());
+            }
+            return 0;
+        }
         case WM_CLOSE:
             if (settings_.minimize_to_tray) {
                 HideToTray();
@@ -383,6 +423,7 @@ private:
                 std::scoped_lock lock{lifecycle_work_mutex_};
                 receiver_->Stop();
             }
+            static_cast<void>(settings_store_.Save(settings_));
             PostQuitMessage(0);
             return 0;
         case kMessagePushState:
@@ -440,10 +481,12 @@ private:
                 ShowWindowFromTray();
                 return 0;
             case kTrayCommandToggle:
+                // Async like the UI buttons: WASAPI/DNS-SD setup must not
+                // block the UI thread.
                 if (receiver_->Running()) {
-                    receiver_->Stop();
+                    RunStopAsync(0U);
                 } else {
-                    StartReceiver();
+                    RunStartAsync(0U);
                 }
                 return 0;
             case kTrayCommandExit:
@@ -482,6 +525,14 @@ private:
                     if (FAILED(result) || environment == nullptr) {
                         std::wcerr << L"WebView2 environment creation failed: 0x" << std::hex
                                    << static_cast<std::uint32_t>(result) << std::dec << L"\n";
+                        if (self->hwnd_ != nullptr) {
+                            MessageBoxW(
+                                self->hwnd_,
+                                L"WebView2 初始化失败（错误码已写入日志）。\n\n"
+                                L"请确认 Windows 11 或已安装 Microsoft Edge WebView2 "
+                                L"Runtime，然后重新启动程序。",
+                                L"AirPlayWin", MB_ICONERROR);
+                        }
                         return result;
                     }
                     std::wcerr << L"WebView2 environment ready.\n";
@@ -713,30 +764,39 @@ private:
             SendResponse(message.id, response, true);
         } else if (message.command == L"setVolume") {
             const auto gain = ReadFloatField(message.payload, L"gain");
-            std::wcerr << L"setVolume: parsed gain=" << gain << L" payload="
-                       << Utf8ToWide(message.payload).substr(
-                              0U, std::min<std::size_t>(60U, message.payload.size()))
-                       << L"\n";
             settings_.volume = std::clamp(gain, 0.0F, 1.0F);
             static_cast<void>(receiver_->SetVolume(settings_.volume));
-            static_cast<void>(settings_store_.Save(settings_));
+            // The Windows per-app session volume is system-persisted; the
+            // settings file is updated once at shutdown rather than on
+            // every slider step.
             SendResponse(message.id, "{\"ok\":true}", true);
         } else if (message.command == L"openLogsFolder") {
             static_cast<void>(ShellExecuteW(nullptr, L"open", log_directory_.c_str(),
                                             nullptr, nullptr, SW_SHOWNORMAL));
             SendResponse(message.id, "{\"ok\":true}", true);
+        } else if (message.command == L"openUrl") {
+            const auto url = ReadStringField(message.payload, L"url");
+            if (!url.empty() &&
+                (url.starts_with(L"https://") || url.starts_with(L"http://"))) {
+                static_cast<void>(ShellExecuteW(nullptr, L"open", url.c_str(), nullptr,
+                                                nullptr, SW_SHOWNORMAL));
+            }
+            SendResponse(message.id, "{\"ok\":true}", true);
         } else if (message.command == L"hideToTray") {
             HideToTray();
+            SendResponse(message.id, "{\"ok\":true}", true);
         } else if (message.command == L"testResult") {
-            // Automated bridge test mode: persist the result and close.
+            // Automated bridge test mode: persist the result, restore the
+            // settings the test may have modified, and close.
             const auto result_path = log_directory_.parent_path() / "test-bridge.json";
             std::ofstream stream{result_path, std::ios::binary | std::ios::trunc};
             if (stream) {
                 stream.write(message.payload.data(),
                              static_cast<std::streamsize>(message.payload.size()));
             }
-            settings_.minimize_to_tray = false;
+            settings_ = settings_at_start_;
             static_cast<void>(settings_store_.Save(settings_));
+            settings_.minimize_to_tray = false;
             DestroyWindow(hwnd_);
         } else if (message.command == L"exitApp") {
             settings_.minimize_to_tray = false;
@@ -921,6 +981,12 @@ private:
                 ok = receiver_->Start();
                 std::wcerr << L"Lifecycle worker: Start returned " << (ok ? L"ok" : L"failed")
                            << L", error=" << receiver_->LastError() << L"\n";
+                if (ok) {
+                    // Apply the saved volume to the freshly opened audio
+                    // session so the slider and Windows stay in sync even
+                    // when the receiver was stopped when it was changed.
+                    static_cast<void>(receiver_->SetVolume(settings_.volume));
+                }
                 if (!ok) {
                     message = L"接收器启动失败（错误码 " +
                               std::to_wstring(receiver_->LastError()) +
@@ -1453,9 +1519,12 @@ private:
         const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
             nullptr, L"runas", path.c_str(), arguments, nullptr, SW_SHOWNORMAL));
         if (result <= 32) {
-            SendOkResponse(0U, false,
-                           L"需要管理员权限：请以管理员身份运行本程序后重试，或从"
-                           L"开始菜单右键选择“以管理员身份运行”。");
+            // The caller already answered its request; surface the failure
+            // as a native prompt since UAC never appeared.
+            MessageBoxW(hwnd_,
+                        L"需要管理员权限：请以管理员身份运行本程序后重试，或从"
+                        L"开始菜单右键选择“以管理员身份运行”。",
+                        L"AirPlayWin - 防火墙", MB_ICONWARNING);
         }
     }
 
@@ -1511,6 +1580,7 @@ private:
     HINSTANCE instance_{nullptr};
     HWND hwnd_{nullptr};
     AppSettings settings_{};
+    AppSettings settings_at_start_{};
     std::filesystem::path ui_directory_{};
     std::filesystem::path log_directory_{};
     SettingsStore settings_store_;
