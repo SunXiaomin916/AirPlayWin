@@ -703,7 +703,49 @@ absolute RTP/PTP phase contract, but no network protocol yet distributes members
 between AirPlayWin hosts. Phase 12 provides the Group Sync Analyzer and automated p95/p99 gates;
 acceptance of those targets still requires a controlled synchronized physical capture rather
 than timestamp simulation alone. Phase 5 accepts inbound retransmitted audio on the control port
-but does not originate resend requests.
+and also originates classic resend requests: a loss gap opens after a small reorder window, the
+request goes to the sender's control port, and the gap is held briefly so the retransmitted copy
+replays in place before concealment kicks in.
+
+## Hardening after 1.0.1
+
+An independent code review plus a clean-machine verification pass produced the following
+fixes on top of 1.0.1:
+
+- The decode worker now sleeps on the jitter buffer instead of spinning a core for the whole
+  session; idle CPU between packets is ~0%.
+- Classic RAOP retransmission is functional end to end: resend requests (0x80 0xD5 runs) are
+  sent to the sender's control port, and loss gaps hold briefly so retransmitted copies replay
+  in place instead of being declared late.
+- Loss declaration uses a fixed reorder window instead of the adaptive buffer target, so a
+  single dropped packet produces one concealed frame instead of a multi-packet stall.
+- The idle-timeout scan no longer kills live sessions: paused senders keep their connection,
+  while connections that never complete a request are hard-closed (slow-loris protection).
+- Queue-overflow backpressure ends in a guarded hard resync (fade out, purge, fade in) instead
+  of splicing dropped frames into the waveform.
+- The transition guard defers lower-priority commands instead of discarding them, so a quick
+  Pause -> Resume can no longer strand playback in silence; stop/pause fades follow live PCM
+  through a partial underrun, and fade endpoints reach exactly zero.
+- A lifecycle mutex serializes the WASAPI output facade against Close; the sink prefill is
+  clamped to the output high-water target; ALAC packets up to 32 KiB are accepted; the
+  Media Foundation decoder drains transient `MF_E_NOTACCEPTING` state.
+- The DNS-SD registration timeout path waits for the completion callback after cancelling;
+  recovery retries back off exponentially; the stop event exists before services start; and
+  autostart logs are pruned to 30 days.
+- PTP: conformant minimal two-step Sync packets parse correctly, stale FollowUps expire,
+  samples from a second PTP domain are ignored while locked, and the resample ratio is a
+  closed-loop depth servo on the sink queue (bounded to ±2000 ppm) instead of a fixed
+  feed-forward ratio.
+- Group coordination handles externally observed grandmaster changes, re-prerolls members
+  that drained during holdover, emits RampOut/EnterHoldover/Relocked actions, refuses
+  past-boundary join plans, and faults members whose audio gate missed its activation
+  window. The Group Sync Analyzer requires at least two complete pulses and rejects
+  cross-pulse alias matches.
+- GitHub Actions CI builds and tests Debug and Release on every push and pull request; a
+  deterministic parser fuzz smoke test runs in the native suite; an MIT license is included.
+
+The full native suite (43 modules), the three CI regression gates, and clean-machine
+`--serve`/`--play` smoke tests all pass with `/W4 /WX` on MSVC 19.44.
 
 See [phase 1](docs/phase-1.md) for audio invariants, [phase 2](docs/phase-2.md) for discovery,
 [phase 3](docs/phase-3.md) for parser/session/TCP boundaries, and

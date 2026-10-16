@@ -10,11 +10,11 @@ AirPlayWin 是一个面向 Windows 11 x64 的原生 Classic AirPlay/RAOP 音频�
 iPhone、iPad 和 Mac 将 Windows 电脑识别为无线音箱，并通过默认扬声器、耳机、USB DAC、
 HDMI 或指定的 Windows 音频端点播放 Apple Lossless（ALAC）或 L16 音频。
 
-当前稳定版为 **v1.0.1**。它采用 C++23、CMake、Winsock2/IOCP、WASAPI、QPC、Windows
+当前稳定版为 **v1.0.2**。它采用 C++23、CMake、Winsock2/IOCP、WASAPI、QPC、Windows
 CNG 和 Media Foundation 实现，核心音频引擎与协议、平台及未来 UI 层保持解耦。
 
 > [!IMPORTANT]
-> v1.0.1 支持的是经过实际播放验证的 **Classic AirPlay/RAOP 音频**，不是完整 AirPlay 2。
+> v1.0.2 支持的是经过实际播放验证的 **Classic AirPlay/RAOP 音频**，不是完整 AirPlay 2。
 > 现代 Pairing/FairPlay、完整 PTP、多主机多房间、视频投屏和 WinUI 尚未包含在稳定版中。
 
 ## 主要功能
@@ -38,8 +38,8 @@ CNG 和 Media Foundation 实现，核心音频引擎与协议、平台及未来 
 
 从 [GitHub Releases](https://github.com/SunXiaomin916/AirPlayWin/releases/latest) 下载：
 
-- `AirPlayWin-1.0.1-windows-x64.zip`
-- `AirPlayWin-1.0.1-windows-x64.zip.sha256`
+- `AirPlayWin-1.0.2-windows-x64.zip`
+- `AirPlayWin-1.0.2-windows-x64.zip.sha256`
 
 下载后可先验证 SHA-256：
 
@@ -227,7 +227,7 @@ v1.0.1 没有实现 AirPlay Pairing、PIN 或每个发送端的授权。任何�
 - 不支持视频、屏幕镜像或照片投送。
 - 尚无 WinUI 图形界面。
 - 正式 ZIP 当前未使用生产 Authenticode 证书签名。
-- 当前仓库尚未附带开源许可证；源码公开可见不等于自动授予复制、修改或再分发权利。
+- 仓库采用 MIT 许可证。
 
 各阶段的完整设计、测试数据和实验功能说明可继续查阅英文 [README](README.md) 以及
 [`docs/`](docs/) 目录。

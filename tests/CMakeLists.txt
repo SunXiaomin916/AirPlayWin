@@ -32,6 +32,7 @@ add_executable(airplaywin_tests
     TestRtpPacket.cpp
     TestRtpTransportIntegration.cpp
     TestRtspParser.cpp
+    TestRtspParserFuzz.cpp
     TestSdpAndTransport.cpp
     TestSessionManager.cpp
     TestSignalGenerator.cpp

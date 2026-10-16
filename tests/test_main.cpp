@@ -35,6 +35,7 @@ void TestRtpJitterBuffer();
 void TestRtpPacket();
 void TestRtpTransportIntegration();
 void TestRtspParser();
+void TestRtspParserFuzz();
 void TestSdpAndTransport();
 void TestSessionManager();
 void TestSignalGenerator();
@@ -55,7 +56,7 @@ struct TestCase final {
     TestFunction function{nullptr};
 };
 
-constexpr std::array<TestCase, 41U> kTests{{
+constexpr std::array<TestCase, 42U> kTests{{
     {"AdaptiveJitterBuffer", &TestAdaptiveJitterBuffer},
     {"AntiPopStress", &TestAntiPopStress},
     {"AudioEpoch", &TestAudioEpoch},
@@ -82,6 +83,7 @@ constexpr std::array<TestCase, 41U> kTests{{
     {"RtpAudioStream", &TestRtpAudioStream},
     {"RtpTransportIntegration", &TestRtpTransportIntegration},
     {"RtspParser", &TestRtspParser},
+    {"RtspParserFuzz", &TestRtspParserFuzz},
     {"SdpAndTransport", &TestSdpAndTransport},
     {"SessionManager", &TestSessionManager},
     {"AirPlayControlService", &TestAirPlayControlService},

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: Build and test (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (VS2022 x64)
+        run: cmake --preset vs2022-x64
+
+      - name: Build Debug
+        run: cmake --build --preset debug --parallel
+
+      - name: Test Debug
+        run: ctest --preset debug
+
+      - name: Build Release
+        run: cmake --build --preset release --parallel
+
+      - name: Test Release
+        run: ctest --preset release
+
+      - name: CI regression gates (sync / anti-pop / latency / version)
+        run: ctest --preset ci-regression
