@@ -16,7 +16,8 @@ namespace {
 
 }  // namespace
 
-PtpClockDomain::PtpClockDomain(const ClockServoConfig config) : servo_(config) {}
+PtpClockDomain::PtpClockDomain(const ClockServoConfig config)
+    : servo_(config), local_clock_frequency_(config.local_clock_frequency) {}
 
 void PtpClockDomain::OnDatagram(const std::span<const std::byte> datagram,
                                 const std::int64_t local_receive_qpc) noexcept {
@@ -28,6 +29,16 @@ void PtpClockDomain::OnDatagram(const std::span<const std::byte> datagram,
         return;
     }
     diagnostics_.domain_number = packet->domain_number;
+    // While locked to a master, ignore traffic from other PTP domains so a
+    // second domain cannot alternate samples into the servo.
+    const auto servo_state = servo_.Diagnostics().state;
+    if (locked_domain_.has_value() &&
+        (servo_state == ClockServoState::Locked || servo_state == ClockServoState::Holdover ||
+         servo_state == ClockServoState::Relocking) &&
+        packet->domain_number != *locked_domain_) {
+        ++diagnostics_.ignored_messages;
+        return;
+    }
     switch (packet->message_type) {
     case PtpMessageType::Sync: {
         ++diagnostics_.sync_messages;
@@ -49,16 +60,28 @@ void PtpClockDomain::OnDatagram(const std::span<const std::byte> datagram,
             ++diagnostics_.invalid_datagrams;
             return;
         }
-        SubmitSampleLocked(*remote, local_receive_qpc, packet->source_clock_identity);
+        SubmitSampleLocked(*remote, local_receive_qpc, packet->source_clock_identity,
+                           packet->domain_number);
         return;
     }
     case PtpMessageType::FollowUp: {
         ++diagnostics_.follow_up_messages;
-        if (!pending_.valid || pending_.domain_number != packet->domain_number ||
+        // A FollowUp whose Sync arrived more than ten seconds ago is stale
+        // (its Sync was superseded and this is a delayed/duplicate copy).
+        constexpr std::int64_t kPendingExpirySeconds = 10LL;
+        const auto age_ticks = local_receive_qpc - pending_.local_receive_qpc;
+        const auto stale = local_clock_frequency_ > 0
+                               ? age_ticks >
+                                     kPendingExpirySeconds * local_clock_frequency_
+                               : false;
+        if (!pending_.valid || stale || pending_.domain_number != packet->domain_number ||
             pending_.source_clock_identity != packet->source_clock_identity ||
             pending_.source_port_number != packet->source_port_number ||
             pending_.sequence_id != packet->sequence_id) {
             ++diagnostics_.unmatched_follow_up_messages;
+            if (stale) {
+                pending_.valid = false;
+            }
             return;
         }
         const auto combined_correction = CombineCorrections(
@@ -76,7 +99,7 @@ void PtpClockDomain::OnDatagram(const std::span<const std::byte> datagram,
             return;
         }
         SubmitSampleLocked(*remote, pending_.local_receive_qpc,
-                           pending_.source_clock_identity);
+                           pending_.source_clock_identity, pending_.domain_number);
         pending_.valid = false;
         return;
     }
@@ -96,6 +119,7 @@ void PtpClockDomain::Update(const std::int64_t now_qpc) noexcept {
 void PtpClockDomain::Reset() noexcept {
     std::scoped_lock lock{mutex_};
     pending_ = {};
+    locked_domain_.reset();
     servo_.Reset();
 }
 
@@ -137,11 +161,15 @@ std::optional<std::uint64_t> PtpClockDomain::ApplyCorrection(
 
 void PtpClockDomain::SubmitSampleLocked(const std::uint64_t remote_time_nanoseconds,
                                         const std::int64_t local_receive_qpc,
-                                        const std::uint64_t source_clock_identity) noexcept {
+                                        const std::uint64_t source_clock_identity,
+                                        const std::uint8_t domain_number) noexcept {
     if (servo_.AddSample({.remote_time_nanoseconds = remote_time_nanoseconds,
                           .local_receive_qpc = local_receive_qpc,
                           .source_clock_identity = source_clock_identity})) {
         ++diagnostics_.completed_samples;
+    }
+    if (!locked_domain_.has_value() && servo_.Diagnostics().locked) {
+        locked_domain_ = domain_number;
     }
 }
 

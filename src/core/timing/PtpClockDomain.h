@@ -57,12 +57,18 @@ private:
         std::int64_t correction_nanoseconds) noexcept;
     void SubmitSampleLocked(std::uint64_t remote_time_nanoseconds,
                             std::int64_t local_receive_qpc,
-                            std::uint64_t source_clock_identity) noexcept;
+                            std::uint64_t source_clock_identity,
+                            std::uint8_t domain_number) noexcept;
 
     mutable std::mutex mutex_{};
     ClockServo servo_;
     PendingSync pending_{};
     PtpClockDomainDiagnostics diagnostics_{};
+    // Domain accepted while the servo is locked: samples from a second PTP
+    // domain (e.g. a switch's default profile) must not churn the servo's
+    // master-selection logic.
+    std::optional<std::uint8_t> locked_domain_{};
+    std::int64_t local_clock_frequency_{0};
 };
 
 }  // namespace airplaywin::timing

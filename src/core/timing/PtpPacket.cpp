@@ -91,9 +91,19 @@ std::optional<PtpPacketView> ParsePtpPacket(
         .source_port_number = ReadU16(packet, 28U),
         .sequence_id = ReadU16(packet, 30U),
     };
-    if (message_type == PtpMessageType::Sync ||
-        message_type == PtpMessageType::FollowUp ||
-        message_type == PtpMessageType::DelayResponse) {
+    if (message_type == PtpMessageType::Sync) {
+        // A two-step Sync carries no originTimestamp (messageLength 34 per
+        // IEEE 1588-2008 13.3.2.2); the timestamp arrives in the paired
+        // FollowUp. Requiring it here rejected every conformant minimal
+        // two-step Sync and made the two-step path dead.
+        if (!result.two_step) {
+            result.origin_timestamp_nanoseconds = ReadTimestamp(packet, kHeaderBytes);
+            if (!result.origin_timestamp_nanoseconds.has_value()) {
+                return std::nullopt;
+            }
+        }
+    } else if (message_type == PtpMessageType::FollowUp ||
+               message_type == PtpMessageType::DelayResponse) {
         result.origin_timestamp_nanoseconds = ReadTimestamp(packet, kHeaderBytes);
         if (!result.origin_timestamp_nanoseconds.has_value()) {
             return std::nullopt;
