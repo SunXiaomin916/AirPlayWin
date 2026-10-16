@@ -390,6 +390,16 @@ GroupSyncAnalysisResult GroupSyncAnalyzer::AnalyzeWaveform(
                 complete = false;
                 break;
             }
+            // A match that sits more than half a pulse gap away from the
+            // reference belongs to an adjacent pulse; counting it would
+            // alias a large skew into a small one. Reject the pulse instead.
+            const auto lag_frames = reference_onset >= *matched
+                                        ? reference_onset - *matched
+                                        : *matched - reference_onset;
+            if (lag_frames > minimum_gap_frames / 2U) {
+                complete = false;
+                break;
+            }
             const auto onset_lag =
                 static_cast<std::int64_t>(*matched) -
                 static_cast<std::int64_t>(reference_onset);

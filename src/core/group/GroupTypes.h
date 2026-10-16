@@ -104,6 +104,9 @@ public:
     [[nodiscard]] std::uint32_t ActivationRtpTimestamp() const noexcept;
     [[nodiscard]] std::uint64_t ActivationRemotePtpNanoseconds() const noexcept;
     [[nodiscard]] std::int64_t EndpointLatencyOffsetMicroseconds() const noexcept;
+    // Marks the member Faulted (e.g. its audio gate missed the activation
+    // window); the coordinator observes the state via Members().
+    void ReportFault() noexcept;
 
 private:
     friend class GroupCoordinator;

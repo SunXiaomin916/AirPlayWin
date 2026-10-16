@@ -18,6 +18,7 @@ struct GroupMemberAudioGateDiagnostics final {
     std::uint64_t rejected_frames{0U};
     std::uint64_t ramp_in_events{0U};
     std::uint64_t ramp_out_events{0U};
+    std::uint64_t missed_activation_events{0U};
 };
 
 // Keeps a member silent while its clock and pre-roll converge. The wrapped sink remains the
@@ -55,11 +56,13 @@ private:
     std::atomic<bool> configured_{false};
     std::atomic<bool> audible_{false};
     std::atomic<std::uint16_t> channel_count_{0U};
+    std::atomic<std::uint32_t> sample_rate_{0U};
     std::atomic<std::uint64_t> muted_frames_{0U};
     std::atomic<std::uint64_t> audible_frames_{0U};
     std::atomic<std::uint64_t> rejected_frames_{0U};
     std::atomic<std::uint64_t> ramp_in_events_{0U};
     std::atomic<std::uint64_t> ramp_out_events_{0U};
+    std::atomic<std::uint64_t> missed_activation_events_{0U};
 };
 
 }  // namespace airplaywin::group

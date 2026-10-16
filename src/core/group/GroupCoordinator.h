@@ -95,6 +95,10 @@ private:
         GroupMemberState state{GroupMemberState::WaitingForSession};
         bool clock_locked{false};
         bool was_active_before_holdover{false};
+        bool ramp_out_action_emitted{false};
+        bool holdover_action_emitted{false};
+        bool relock_action_emitted{false};
+        bool relock_pending_action_{false};
         std::uint64_t clock_identity{0U};
         std::uint64_t buffered_frames{0U};
         std::uint64_t uncertainty_microseconds{0U};

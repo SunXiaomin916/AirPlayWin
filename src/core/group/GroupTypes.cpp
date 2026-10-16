@@ -26,4 +26,8 @@ void GroupMemberRuntime::UpdateState(const GroupMemberState state) noexcept {
     state_.store(state, std::memory_order_release);
 }
 
+void GroupMemberRuntime::ReportFault() noexcept {
+    state_.store(GroupMemberState::Faulted, std::memory_order_release);
+}
+
 }  // namespace airplaywin::group

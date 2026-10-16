@@ -75,7 +75,9 @@ struct GroupSyncWaveformConfig final {
     std::uint32_t correlation_window_frames{96U};
     std::uint32_t correlation_search_frames{16U};
     double minimum_correlation{0.20};
-    std::uint32_t minimum_complete_pulses{1U};
+    // At least two complete pulses: with one, the percentile gates
+    // degenerate to a single measurement and any capture "passes".
+    std::uint32_t minimum_complete_pulses{2U};
     GroupSyncTargets targets{};
 
     [[nodiscard]] bool IsValid() const noexcept;
@@ -89,7 +91,8 @@ struct GroupSyncTimestampObservation final {
 
 struct GroupSyncTimestampConfig final {
     std::vector<GroupMemberId> members{};
-    std::uint32_t minimum_complete_pulses{1U};
+    // At least two complete pulses, as above.
+    std::uint32_t minimum_complete_pulses{2U};
     GroupSyncTargets targets{};
 
     [[nodiscard]] bool IsValid() const noexcept;

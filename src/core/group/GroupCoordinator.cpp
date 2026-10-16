@@ -100,6 +100,10 @@ GroupOperationResult GroupCoordinator::BeginSession(
         static_cast<void>(id);
         member.activation_remote_ptp_nanoseconds = 0U;
         member.activation_rtp_timestamp = 0U;
+        member.ramp_out_action_emitted = false;
+        member.holdover_action_emitted = false;
+        member.relock_action_emitted = false;
+        member.relock_pending_action_ = false;
         member.runtime->session_epoch_.store(anchor.session_epoch,
                                              std::memory_order_release);
         member.runtime->activation_remote_ptp_nanoseconds_.store(
@@ -141,6 +145,7 @@ GroupOperationResult GroupCoordinator::ChangeMaster(
             if (member.state != GroupMemberState::Holdover) {
                 ++diagnostics_.holdover_events;
             }
+            member.holdover_action_emitted = false;
             SetStateLocked(member, GroupMemberState::Holdover);
         } else if (member.state != GroupMemberState::Leaving &&
                    member.state != GroupMemberState::Dropped &&
@@ -183,6 +188,37 @@ GroupOperationResult GroupCoordinator::UpdateMemberTiming(
         member.state == GroupMemberState::Faulted) {
         return GroupOperationResult::InvalidState;
     }
+    // A grandmaster change observed from the network (BMCA) must trigger
+    // the same holdover sequence as an explicit ChangeMaster call; members
+    // then wait for the new master's phase anchor before relocking. A
+    // differing identity reported while a transition is already pending is
+    // stale information, not a second master change.
+    if (diagnostics_.session_active && !diagnostics_.master_phase_pending &&
+        update.master_clock_identity != 0U &&
+        diagnostics_.active_master_clock_identity != 0U &&
+        update.master_clock_identity != diagnostics_.active_master_clock_identity) {
+        diagnostics_.active_master_clock_identity = update.master_clock_identity;
+        diagnostics_.master_phase_pending = true;
+        relock_started_remote_ptp_nanoseconds_ = 0U;
+        ++diagnostics_.master_change_events;
+        for (auto& [other_id, other] : members_) {
+            static_cast<void>(other_id);
+            if (other.state == GroupMemberState::Active ||
+                other.state == GroupMemberState::Holdover) {
+                other.was_active_before_holdover = true;
+                if (other.state != GroupMemberState::Holdover) {
+                    ++diagnostics_.holdover_events;
+                }
+                other.holdover_action_emitted = false;
+                SetStateLocked(other, GroupMemberState::Holdover);
+            } else if (other.state != GroupMemberState::Leaving &&
+                       other.state != GroupMemberState::Dropped &&
+                       other.state != GroupMemberState::Faulted) {
+                SetStateLocked(other, GroupMemberState::ClockAcquiring);
+            }
+            other.clock_locked = false;
+        }
+    }
     member.clock_identity = update.master_clock_identity;
     member.buffered_frames = update.buffered_frames;
     member.uncertainty_microseconds = update.uncertainty_microseconds;
@@ -198,6 +234,7 @@ GroupOperationResult GroupCoordinator::UpdateMemberTiming(
             if (member.state != GroupMemberState::Holdover) {
                 ++diagnostics_.holdover_events;
             }
+            member.holdover_action_emitted = false;
             SetStateLocked(member, GroupMemberState::Holdover);
         } else {
             SetStateLocked(member, diagnostics_.session_active
@@ -211,9 +248,19 @@ GroupOperationResult GroupCoordinator::UpdateMemberTiming(
     }
     if (member.state == GroupMemberState::Holdover &&
         member.was_active_before_holdover) {
+        if (member.buffered_frames < RequiredPrerollFrames(config_)) {
+            // The member drained its buffer during holdover. It must
+            // re-preroll and join at a fresh boundary instead of going
+            // audible immediately and glitching.
+            member.was_active_before_holdover = false;
+            member.clock_locked = false;
+            SetStateLocked(member, GroupMemberState::Prerolling);
+            return GroupOperationResult::Ok;
+        }
         member.was_active_before_holdover = false;
         SetStateLocked(member, GroupMemberState::Active);
         ++diagnostics_.relock_events;
+        member.relock_pending_action_ = true;
         if (relock_started_remote_ptp_nanoseconds_ != 0U &&
             update.observation_remote_ptp_nanoseconds >=
                 relock_started_remote_ptp_nanoseconds_) {
@@ -264,8 +311,40 @@ std::vector<GroupMemberAction> GroupCoordinator::Advance(
     const std::uint64_t remote_now_nanoseconds) {
     std::scoped_lock lock{mutex_};
     std::vector<GroupMemberAction> actions;
-    actions.reserve(members_.size());
+    actions.reserve(members_.size() * 2U);
     for (auto& [id, member] : members_) {
+        // Emit one-shot lifecycle actions for consumers driving real
+        // endpoints, in addition to the join ramp-in below.
+        if (member.state == GroupMemberState::Leaving &&
+            !member.ramp_out_action_emitted) {
+            member.ramp_out_action_emitted = true;
+            actions.push_back({.member_id = id,
+                               .type = GroupMemberActionType::RampOut,
+                               .session_epoch = diagnostics_.session_epoch,
+                               .target_remote_ptp_nanoseconds = 0U,
+                               .target_rtp_timestamp = 0U});
+            continue;
+        }
+        if (member.state == GroupMemberState::Holdover &&
+            !member.holdover_action_emitted) {
+            member.holdover_action_emitted = true;
+            actions.push_back({.member_id = id,
+                               .type = GroupMemberActionType::EnterHoldover,
+                               .session_epoch = diagnostics_.session_epoch,
+                               .target_remote_ptp_nanoseconds = 0U,
+                               .target_rtp_timestamp = 0U});
+            continue;
+        }
+        if (member.state == GroupMemberState::Active && member.relock_pending_action_) {
+            member.relock_pending_action_ = false;
+            member.relock_action_emitted = true;
+            actions.push_back({.member_id = id,
+                               .type = GroupMemberActionType::Relocked,
+                               .session_epoch = diagnostics_.session_epoch,
+                               .target_remote_ptp_nanoseconds = 0U,
+                               .target_rtp_timestamp = 0U});
+            continue;
+        }
         if (member.state == GroupMemberState::MutedReady &&
             remote_now_nanoseconds >= member.activation_remote_ptp_nanoseconds) {
             SetStateLocked(member, GroupMemberState::Active);
@@ -302,6 +381,7 @@ GroupOperationResult GroupCoordinator::BeginLeave(
     if (found->second.state == GroupMemberState::Leaving) {
         return GroupOperationResult::InvalidState;
     }
+    found->second.ramp_out_action_emitted = false;
     SetStateLocked(found->second, GroupMemberState::Leaving);
     return GroupOperationResult::Ok;
 }
@@ -457,9 +537,13 @@ std::optional<GroupJoinPlan> GroupCoordinator::BuildJoinPlanLocked(
         return std::nullopt;
     }
     const auto earliest = remote_now_nanoseconds + lead_nanoseconds;
-    const auto delta_nanoseconds = earliest > timeline.anchor.remote_ptp_nanoseconds
-                                       ? earliest - timeline.anchor.remote_ptp_nanoseconds
-                                       : 0U;
+    if (earliest <= timeline.anchor.remote_ptp_nanoseconds) {
+        // remote_now is at or behind the phase anchor (backward clock).
+        // Scheduling would place the activation in the past and unmute at a
+        // stale position; refuse and let the caller retry later.
+        return std::nullopt;
+    }
+    const auto delta_nanoseconds = earliest - timeline.anchor.remote_ptp_nanoseconds;
     const auto frame_position = static_cast<long double>(delta_nanoseconds) *
                                 config_.target_format.sample_rate /
                                 1'000'000'000.0L;

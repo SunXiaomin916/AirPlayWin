@@ -33,6 +33,7 @@ bool GroupMemberAudioGate::Configure(const audio::AudioFormat& format) {
         return false;
     }
     channel_count_.store(format.channel_count, std::memory_order_release);
+    sample_rate_.store(format.sample_rate, std::memory_order_release);
     audible_.store(false, std::memory_order_release);
     sink_.SetVolume(0.0F);
     configured_.store(true, std::memory_order_release);
@@ -58,6 +59,24 @@ bool GroupMemberAudioGate::Submit(
         sample_count > silence_.size()) {
         rejected_frames_.fetch_add(frame.frame_count, std::memory_order_relaxed);
         return false;
+    }
+
+    // If the activation point was missed (stream loss or a decoder stall),
+    // surface a fault instead of staying muted forever while the
+    // coordinator still reports the member as joining.
+    const auto state = runtime_->State();
+    if (state == GroupMemberState::MutedReady &&
+        runtime_->ActivationRtpTimestamp() != 0U) {
+        const auto activation = runtime_->ActivationRtpTimestamp();
+        const auto missed = static_cast<std::int32_t>(frame.rtp_timestamp - activation);
+        const auto fault_threshold = static_cast<std::int32_t>(sample_rate_);
+        if (missed > fault_threshold) {
+            missed_activation_events_.fetch_add(1U, std::memory_order_relaxed);
+            runtime_->ReportFault();
+            ApplyAudibleState(false);
+            rejected_frames_.fetch_add(frame.frame_count, std::memory_order_relaxed);
+            return false;
+        }
     }
 
     const bool render_audibly = ShouldRenderAudibly(frame);
@@ -94,6 +113,11 @@ void GroupMemberAudioGate::Pause() noexcept {
 
 void GroupMemberAudioGate::Resume() noexcept {
     sink_.Resume();
+    // Restore the gate's volume authority for an already-audible stream;
+    // muted members stay muted until the gate reopens on the next frame.
+    if (audible_.load(std::memory_order_acquire)) {
+        sink_.SetVolume(desired_gain_.load(std::memory_order_acquire));
+    }
 }
 
 void GroupMemberAudioGate::Flush() noexcept {
@@ -135,6 +159,8 @@ GroupMemberAudioGateDiagnostics GroupMemberAudioGate::Diagnostics() const noexce
         .rejected_frames = rejected_frames_.load(std::memory_order_relaxed),
         .ramp_in_events = ramp_in_events_.load(std::memory_order_relaxed),
         .ramp_out_events = ramp_out_events_.load(std::memory_order_relaxed),
+        .missed_activation_events =
+            missed_activation_events_.load(std::memory_order_relaxed),
     };
 }
 
