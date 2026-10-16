@@ -25,7 +25,7 @@ void TestAudioTransitionGuard() {
     guard.Request(AudioTransition::Start);
     std::array<float, 20U> samples{};
     samples.fill(1.0F);
-    guard.Process(samples, 10U, 2U, false);
+    guard.Process(samples, 10U, 2U, 10U);
     APW_EXPECT(samples[0] == 0.0F);
     APW_EXPECT(samples[1] == 0.0F);
     APW_EXPECT(guard.State() == AudioTransitionState::Audible);
@@ -33,24 +33,24 @@ void TestAudioTransitionGuard() {
 
     guard.SetTargetVolume(0.0F);
     samples.fill(1.0F);
-    guard.Process(samples, 5U, 2U, false);
+    guard.Process(samples, 5U, 2U, 5U);
     APW_EXPECT(samples[0] < 1.0F);
     APW_EXPECT_NEAR(samples[9], 0.0, 0.0001);
 
     guard.SetTargetVolume(1.0F);
     samples.fill(1.0F);
-    guard.Process(samples, 5U, 2U, false);
+    guard.Process(samples, 5U, 2U, 5U);
     samples[0] = std::numeric_limits<float>::quiet_NaN();
     samples[1] = std::numeric_limits<float>::infinity();
     samples[2] = 5.0F;
-    guard.Process(samples, 10U, 2U, false);
+    guard.Process(samples, 10U, 2U, 10U);
     APW_EXPECT(std::isfinite(samples[0]));
     APW_EXPECT(std::isfinite(samples[1]));
     APW_EXPECT(guard.InvalidNumericSamples() >= 2U);
     APW_EXPECT(guard.ClippedSamples() >= 1U);
 
     samples.fill(0.0F);
-    guard.Process(samples, 10U, 2U, true);
+    guard.Process(samples, 10U, 2U, 0U);
     APW_EXPECT(guard.State() == AudioTransitionState::SafeMute);
     APW_EXPECT(guard.UnderrunTransitionEvents() == 1U);
     APW_EXPECT(guard.SafeMuteEvents() >= 1U);
@@ -58,11 +58,11 @@ void TestAudioTransitionGuard() {
     guard.Request(AudioTransition::HardResync);
     std::array<float, 40U> resync_samples{};
     resync_samples.fill(1.0F);
-    guard.Process(resync_samples, 20U, 2U, false);
+    guard.Process(resync_samples, 20U, 2U, 20U);
     APW_EXPECT(guard.State() == AudioTransitionState::SafeMute);
     guard.Request(AudioTransition::Resume);
     resync_samples.fill(1.0F);
-    guard.Process(resync_samples, 20U, 2U, false);
+    guard.Process(resync_samples, 20U, 2U, 20U);
     APW_EXPECT(guard.State() == AudioTransitionState::Audible);
     for (const auto sample : resync_samples) {
         APW_EXPECT(std::isfinite(sample));
@@ -86,7 +86,7 @@ void TestAudioTransitionGuard() {
     float previous_sample = 0.0F;
     const auto process_stress_block = [&]() {
         stress_samples.fill(0.5F);
-        stress_guard.Process(stress_samples, 20U, 2U, false);
+        stress_guard.Process(stress_samples, 20U, 2U, 20U);
         for (const auto output : stress_samples) {
             APW_EXPECT(std::isfinite(output));
             APW_EXPECT(std::abs(output - previous_sample) <= 0.25F);
@@ -128,20 +128,20 @@ void TestAudioTransitionGuard() {
     priority_guard.Request(AudioTransition::Resume);
     std::array<float, 40U> priority_samples{};
     priority_samples.fill(0.5F);
-    priority_guard.Process(priority_samples, 20U, 2U, false);
+    priority_guard.Process(priority_samples, 20U, 2U, 20U);
     APW_EXPECT(priority_guard.State() == AudioTransitionState::DeviceMuted);
 
     priority_guard.Request(AudioTransition::Start);
     priority_samples.fill(0.5F);
-    priority_guard.Process(priority_samples, 20U, 2U, false);
+    priority_guard.Process(priority_samples, 20U, 2U, 20U);
     APW_EXPECT(priority_guard.State() == AudioTransitionState::Audible);
     priority_guard.Request(AudioTransition::Flush);
     std::array<float, 2U> one_frame{0.5F, 0.5F};
-    priority_guard.Process(one_frame, 1U, 2U, false);
+    priority_guard.Process(one_frame, 1U, 2U, 1U);
     APW_EXPECT(priority_guard.State() == AudioTransitionState::FadingOut);
     priority_guard.Request(AudioTransition::Resume);
     priority_samples.fill(-0.5F);
-    priority_guard.Process(priority_samples, 20U, 2U, false);
+    priority_guard.Process(priority_samples, 20U, 2U, 20U);
     APW_EXPECT(priority_guard.State() == AudioTransitionState::Audible);
     APW_EXPECT(priority_guard.ClickPop().transient_events == 0U);
 
@@ -156,12 +156,12 @@ void TestAudioTransitionGuard() {
     }};
     waveform_guard.Request(AudioTransition::Start);
     std::array<float, 4U> waveform_samples{0.25F, 0.25F, 0.25F, 0.25F};
-    waveform_guard.Process(waveform_samples, 2U, 2U, false);
+    waveform_guard.Process(waveform_samples, 2U, 2U, 2U);
     APW_EXPECT(waveform_guard.State() == AudioTransitionState::Audible);
 
     waveform_guard.Request(AudioTransition::Stop);
     waveform_samples = {-0.25F, -0.25F, 0.25F, 0.25F};
-    waveform_guard.Process(waveform_samples, 2U, 2U, false);
+    waveform_guard.Process(waveform_samples, 2U, 2U, 2U);
     APW_EXPECT(waveform_samples[0] < 0.0F);
     APW_EXPECT(waveform_samples[2] > 0.0F);
     APW_EXPECT(waveform_guard.State() == AudioTransitionState::FadingOut);

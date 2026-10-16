@@ -24,7 +24,10 @@ using Microsoft::WRL::ComPtr;
 
 constexpr CLSID kAlacDecoderClsid{
     0xC0CD7D12U, 0x31FCU, 0x4BBCU, {0xB3U, 0x63U, 0x73U, 0x22U, 0xEEU, 0x3EU, 0x18U, 0x79U}};
-constexpr std::size_t kMaximumEncodedPacketBytes = 4U * 1'024U;
+// Matches the transport payload cap: 96 kHz / 24-bit stereo packets with
+// thousands of frames per packet far exceed the old 4 KiB bound and were
+// rejected as malformed despite being valid ALAC.
+constexpr std::size_t kMaximumEncodedPacketBytes = 32U * 1'024U;
 
 [[nodiscard]] bool NtSucceeded(const NTSTATUS status) noexcept {
     return status >= 0;
@@ -239,7 +242,31 @@ public:
                 .platform_error = static_cast<std::uint32_t>(failure),
             };
         }
-        const auto input_result = transform_->ProcessInput(0U, input_sample_.Get(), 0U);
+        auto input_result = transform_->ProcessInput(0U, input_sample_.Get(), 0U);
+        if (input_result == MF_E_NOTACCEPTING) {
+            // Transient: the transform still holds output that must be
+            // drained. Pull pending samples, then retry the input once
+            // instead of failing the packet as malformed.
+            for (std::uint32_t attempt = 0U; attempt < 4U; ++attempt) {
+                MFT_OUTPUT_DATA_BUFFER drain_data{
+                    .dwStreamID = 0U, .pSample = nullptr, .dwStatus = 0U, .pEvents = nullptr};
+                DWORD drain_status = 0U;
+                const auto drain_result =
+                    transform_->ProcessOutput(0U, 1U, &drain_data, &drain_status);
+                if (drain_data.pEvents != nullptr) {
+                    drain_data.pEvents->Release();
+                }
+                if (drain_data.pSample != nullptr) {
+                    drain_data.pSample->Release();
+                }
+                if (FAILED(drain_result) ||
+                    drain_result == MF_E_TRANSFORM_NEED_MORE_INPUT ||
+                    drain_result == MF_E_TRANSFORM_STREAM_CHANGE) {
+                    break;
+                }
+            }
+            input_result = transform_->ProcessInput(0U, input_sample_.Get(), 0U);
+        }
         if (FAILED(input_result)) {
             return {
                 .status = DecodeStatus::MalformedPayload,

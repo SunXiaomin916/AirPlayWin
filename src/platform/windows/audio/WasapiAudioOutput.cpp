@@ -168,8 +168,19 @@ public:
     }
 
     bool Open(const airplaywin::audio::AudioFormat& format) {
+        // The lifecycle mutex serializes every public entry point with
+        // Close so producers and diagnostics can never dereference a ring
+        // or guard that Close has just destroyed. The render thread never
+        // takes it (Close joins the render thread before resetting owned
+        // objects), so holding it across a join cannot deadlock.
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         std::scoped_lock lock(control_mutex_);
         if (!format.IsValid() || opened_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (ChannelMask(format.channel_count) == 0U) {
+            last_error_.store(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED),
+                              std::memory_order_release);
             return false;
         }
 
@@ -243,6 +254,7 @@ public:
     }
 
     bool Start() {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         std::scoped_lock lock(control_mutex_);
         if (!opened_.load(std::memory_order_acquire) || guard_ == nullptr) {
             return false;
@@ -317,6 +329,7 @@ public:
     }
 
     bool Write(const airplaywin::audio::AudioBuffer& buffer) noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         if (!opened_.load(std::memory_order_acquire) || ring_ == nullptr || guard_ == nullptr ||
             !buffer.IsValid() || buffer.sample_rate != format_.sample_rate ||
             buffer.channel_count != format_.channel_count) {
@@ -353,6 +366,7 @@ public:
     }
 
     void Pause() noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         requested_playing_.store(false, std::memory_order_release);
         if (guard_ != nullptr) {
             guard_->Request(AudioTransition::Pause);
@@ -360,6 +374,7 @@ public:
     }
 
     void Resume() noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         requested_playing_.store(true, std::memory_order_release);
         if (guard_ != nullptr) {
             guard_->Request(AudioTransition::Resume);
@@ -367,6 +382,7 @@ public:
     }
 
     void Stop() noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         requested_playing_.store(false, std::memory_order_release);
         reset_ring_after_stop_.store(true, std::memory_order_release);
         if (guard_ != nullptr) {
@@ -375,6 +391,7 @@ public:
     }
 
     void Flush() noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         if (ring_ != nullptr) {
             ring_->Reset();
         }
@@ -384,6 +401,7 @@ public:
     }
 
     void BeginEpoch(const std::uint64_t epoch_id, const AudioTransition transition) noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         if (epoch_id == 0U) {
             return;
         }
@@ -397,6 +415,7 @@ public:
     }
 
     void SetVolume(const float linear_gain) noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         const auto safe_gain = SanitizeVolume(linear_gain);
         desired_session_volume_.store(safe_gain, std::memory_order_release);
 
@@ -419,6 +438,7 @@ public:
     }
 
     void Close() noexcept {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         std::scoped_lock lock(control_mutex_);
         if (worker_.joinable() && guard_ != nullptr) {
             if (ring_ != nullptr) {
@@ -449,6 +469,7 @@ public:
     }
 
     [[nodiscard]] airplaywin::audio::AudioDiagnosticsSnapshot Diagnostics() const {
+        std::scoped_lock lifecycle_lock{lifecycle_mutex_};
         const auto click_pop = guard_ != nullptr ? guard_->ClickPop()
                                                  : airplaywin::audio::ClickPopDiagnostics{};
         airplaywin::audio::AudioDiagnosticsSnapshot snapshot{
@@ -1185,8 +1206,7 @@ private:
             }
         }
 
-        guard_->Process(output, writable_frames, format_.channel_count,
-                        frames_read < writable_frames);
+        guard_->Process(output, writable_frames, format_.channel_count, frames_read);
         if (guard_->State() == AudioTransitionState::Stopped &&
             reset_ring_after_stop_.exchange(false, std::memory_order_acq_rel)) {
             // Stop fades queued PCM to zero first. Discard only after the guard reaches
@@ -1306,6 +1326,7 @@ private:
     HANDLE shutdown_event_{nullptr};
     HANDLE reopen_event_{nullptr};
     std::thread worker_{};
+    mutable std::mutex lifecycle_mutex_;
     mutable std::mutex control_mutex_;
     mutable std::mutex device_id_mutex_;
     mutable std::mutex session_volume_mutex_;

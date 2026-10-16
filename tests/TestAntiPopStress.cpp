@@ -43,7 +43,8 @@ void TestAntiPopStress() {
                 phase -= 2.0 * std::numbers::pi;
             }
         }
-        guard.Process(block, kBlockFrames, kChannels, underrun);
+        guard.Process(block, kBlockFrames, kChannels,
+                      underrun ? 0U : kBlockFrames);
     };
     const auto process_blocks = [&](const std::uint32_t count, const bool underrun = false) {
         for (std::uint32_t block_index = 0U; block_index < count; ++block_index) {

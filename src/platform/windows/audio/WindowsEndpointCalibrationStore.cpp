@@ -56,7 +56,10 @@ bool WindowsEndpointCalibrationStore::Save(
         return false;
     }
     RegistryKey key{raw_key};
-    const auto payload = std::to_wstring(calibration.offset_microseconds) + L"|" +
+    // Versioned payload: v1 | offset | source | endpoint-id. The version
+    // marker lets a future format change reject stale records instead of
+    // mis-parsing them, and rejects a torn write from a crash.
+    const auto payload = L"v1|" + std::to_wstring(calibration.offset_microseconds) + L"|" +
                          std::to_wstring(static_cast<unsigned>(calibration.source)) +
                          L"|" + *endpoint;
     const auto value_name = ValueName(calibration.endpoint_id);
@@ -107,21 +110,25 @@ WindowsEndpointCalibrationStore::Load(const std::string_view endpoint_id) const 
     const auto second = first == std::wstring_view::npos
                             ? std::wstring_view::npos
                             : text.find(L'|', first + 1U);
-    if (first == std::wstring_view::npos || second == std::wstring_view::npos) {
+    const auto third = second == std::wstring_view::npos
+                           ? std::wstring_view::npos
+                           : text.find(L'|', second + 1U);
+    if (first == std::wstring_view::npos || second == std::wstring_view::npos ||
+        third == std::wstring_view::npos || text.substr(0U, first) != L"v1") {
         last_error_.store(ERROR_INVALID_DATA, std::memory_order_release);
         return std::nullopt;
     }
-    const std::wstring offset_text{text.substr(0U, first)};
+    const std::wstring offset_text{text.substr(first + 1U, second - first - 1U)};
     errno = 0;
     wchar_t* end = nullptr;
     const auto offset = std::wcstoll(offset_text.c_str(), &end, 10);
-    const auto source_text = text.substr(first + 1U, second - first - 1U);
+    const auto source_text = text.substr(second + 1U, third - second - 1U);
     if (errno == ERANGE || end == offset_text.c_str() || *end != L'\0' ||
         (source_text != L"0" && source_text != L"1")) {
         last_error_.store(ERROR_INVALID_DATA, std::memory_order_release);
         return std::nullopt;
     }
-    const auto stored_id = ToUtf8(text.substr(second + 1U));
+    const auto stored_id = ToUtf8(text.substr(third + 1U));
     if (!stored_id.has_value() || *stored_id != endpoint_id) {
         last_error_.store(ERROR_INVALID_DATA, std::memory_order_release);
         return std::nullopt;

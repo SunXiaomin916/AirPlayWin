@@ -31,7 +31,8 @@ void AudioTransitionGuard::Request(const AudioTransition transition) noexcept {
         hard_resync_events_.fetch_add(1U, std::memory_order_relaxed);
     }
     if ((transition == AudioTransition::Start || transition == AudioTransition::Resume) &&
-        pending_command_.load(std::memory_order_acquire) == AudioTransition::None) {
+        pending_command_.load(std::memory_order_acquire) == AudioTransition::None &&
+        DeferredQueueEmpty()) {
         const auto state = State();
         if (state == AudioTransitionState::Prewarming ||
             state == AudioTransitionState::FadingIn ||
@@ -41,13 +42,56 @@ void AudioTransitionGuard::Request(const AudioTransition transition) noexcept {
     }
 
     auto pending = pending_command_.load(std::memory_order_acquire);
-    while (CommandPriority(transition) > CommandPriority(pending)) {
-        if (pending_command_.compare_exchange_weak(
-                pending, transition, std::memory_order_release,
-                std::memory_order_acquire)) {
+    for (;;) {
+        if (CommandPriority(transition) > CommandPriority(pending)) {
+            if (pending_command_.compare_exchange_weak(
+                    pending, transition, std::memory_order_release,
+                    std::memory_order_acquire)) {
+                // The displaced lower-priority command is deferred, not
+                // discarded: a quick Pause -> Resume pair must end in
+                // Resume, not in permanent silence.
+                if (pending != AudioTransition::None) {
+                    PushDeferred(pending);
+                }
+                return;
+            }
+        } else {
+            PushDeferred(transition);
             return;
         }
     }
+}
+
+void AudioTransitionGuard::PushDeferred(const AudioTransition transition) noexcept {
+    if (transition == AudioTransition::None) {
+        return;
+    }
+    std::scoped_lock lock{deferred_mutex_};
+    if (deferred_count_ < kDeferredQueueCapacity) {
+        deferred_queue_[(deferred_head_ + deferred_count_) % kDeferredQueueCapacity] =
+            transition;
+        ++deferred_count_;
+        return;
+    }
+    // Queue full: drop the oldest deferred command and keep the newest.
+    deferred_queue_[deferred_head_] = transition;
+    deferred_head_ = (deferred_head_ + 1U) % kDeferredQueueCapacity;
+}
+
+AudioTransition AudioTransitionGuard::PopDeferred() noexcept {
+    std::scoped_lock lock{deferred_mutex_};
+    if (deferred_count_ == 0U) {
+        return AudioTransition::None;
+    }
+    const auto transition = deferred_queue_[deferred_head_];
+    deferred_head_ = (deferred_head_ + 1U) % kDeferredQueueCapacity;
+    --deferred_count_;
+    return transition;
+}
+
+bool AudioTransitionGuard::DeferredQueueEmpty() const noexcept {
+    std::scoped_lock lock{deferred_mutex_};
+    return deferred_count_ == 0U;
 }
 
 void AudioTransitionGuard::SetTargetVolume(const float linear_gain) noexcept {
@@ -58,13 +102,15 @@ void AudioTransitionGuard::SetTargetVolume(const float linear_gain) noexcept {
 void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
                                    const std::uint32_t frame_count,
                                    const std::uint16_t channel_count,
-                                   const bool underrun) noexcept {
+                                   const std::uint32_t valid_frames) noexcept {
     const auto channels = static_cast<std::size_t>(channel_count);
     const auto required_samples = static_cast<std::size_t>(frame_count) * channels;
     if (frame_count == 0U || channel_count == 0U || channels > kMaximumChannels ||
         interleaved_samples.size() < required_samples) {
         return;
     }
+    const auto underrun = valid_frames < frame_count;
+    const auto bounded_valid_frames = std::min(valid_frames, frame_count);
 
     ApplyPendingCommand();
     if (underrun && (render_state_ == AudioTransitionState::Audible ||
@@ -78,16 +124,19 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
 
         float transition_gain = 0.0F;
         if (render_state_ == AudioTransitionState::FadingIn) {
-            const auto completed = fade_in_frames_ - transition_frames_remaining_ + 1U;
+            const auto completed = fade_in_frames_ - transition_frames_remaining_;
             transition_gain = SmoothStep(static_cast<float>(completed) /
                                          static_cast<float>(fade_in_frames_));
         } else if (render_state_ == AudioTransitionState::Audible) {
             transition_gain = 1.0F;
         } else if (render_state_ == AudioTransitionState::FadingOut) {
-            transition_gain = SmoothStep(static_cast<float>(transition_frames_remaining_) /
+            const auto position =
+                transition_frames_remaining_ > 0U ? transition_frames_remaining_ - 1U : 0U;
+            transition_gain = SmoothStep(static_cast<float>(position) /
                                          static_cast<float>(fade_out_frames_));
         }
 
+        const auto frame_has_pcm = frame < bounded_valid_frames;
         for (std::size_t channel = 0U; channel < channels; ++channel) {
             const auto sample_index = static_cast<std::size_t>(frame) * channels + channel;
             auto input = interleaved_samples[sample_index];
@@ -118,17 +167,20 @@ void AudioTransitionGuard::Process(const std::span<float> interleaved_samples,
 
             float output = 0.0F;
             if (render_state_ == AudioTransitionState::FadingOut) {
-                // Preserve the waveform phase while queued PCM is still available. Holding
-                // the final sample as DC for the whole fade produces an audible low-level
-                // thump when high-frequency material is stopped. The frozen tail remains
-                // the safe fallback when the source has already underrun.
+                // Preserve the waveform phase while queued PCM is still
+                // available; only the underrun fill (frames past
+                // valid_frames) uses the held tail, and the tail is
+                // re-captured from the last real sample when the queue runs
+                // dry mid-fade so the hand-over stays continuous.
                 const auto can_follow_queued_pcm =
                     fade_out_reason_ == AudioTransition::Stop ||
                     fade_out_reason_ == AudioTransition::Pause;
-                const auto fade_source = !underrun && can_follow_queued_pcm
-                                             ? input * current_volume_
-                                             : fade_tail_[channel];
-                output = fade_source * transition_gain;
+                if (frame_has_pcm && can_follow_queued_pcm) {
+                    fade_tail_[channel] = input;
+                    output = input * current_volume_ * transition_gain;
+                } else {
+                    output = fade_tail_[channel] * transition_gain;
+                }
             } else if (render_state_ == AudioTransitionState::FadingIn ||
                        render_state_ == AudioTransitionState::Audible) {
                 output = input * transition_gain * current_volume_;
@@ -185,7 +237,8 @@ bool AudioTransitionGuard::ShouldHoldInput() const noexcept {
 }
 
 bool AudioTransitionGuard::HasPendingCommand() const noexcept {
-    return pending_command_.load(std::memory_order_acquire) != AudioTransition::None;
+    return pending_command_.load(std::memory_order_acquire) != AudioTransition::None ||
+           !DeferredQueueEmpty();
 }
 
 std::uint64_t AudioTransitionGuard::InvalidNumericSamples() const noexcept {
@@ -287,6 +340,11 @@ void AudioTransitionGuard::ApplyPendingCommand() noexcept {
         break;
     case AudioTransition::None:
         break;
+    }
+    // Promote the next deferred command so the following callback applies it.
+    const auto deferred = PopDeferred();
+    if (deferred != AudioTransition::None) {
+        pending_command_.store(deferred, std::memory_order_release);
     }
 }
 

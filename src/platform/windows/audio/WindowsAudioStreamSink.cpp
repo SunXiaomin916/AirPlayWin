@@ -32,9 +32,16 @@ WindowsAudioStreamSink::WindowsAudioStreamSink(WasapiOutputOptions options,
                                                const std::uint32_t prefill_milliseconds,
                                                const std::uint32_t submission_lead_milliseconds)
     : engine_(std::move(options)),
-      prefill_milliseconds_(std::clamp(prefill_milliseconds, 5U, 500U)),
+      prefill_milliseconds_(0U),
       submission_lead_milliseconds_(
-          std::clamp(submission_lead_milliseconds, 5U, 200U)) {}
+          std::clamp(submission_lead_milliseconds, 5U, 200U)) {
+    // Never prefill beyond the output's high-water target: writes at or
+    // above the target are rejected by the engine, so a larger prefill
+    // could never complete and the stream would stay silent forever.
+    const auto target_queue = std::max(options.target_queue_milliseconds, 5U);
+    prefill_milliseconds_ =
+        std::clamp(std::min(prefill_milliseconds, target_queue), 5U, 500U);
+}
 
 WindowsAudioStreamSink::WindowsAudioStreamSink(
     std::unique_ptr<airplaywin::audio::IAudioOutput> output,
