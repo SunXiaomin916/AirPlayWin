@@ -12,3 +12,4 @@ CMakeUserPresets.json
 *.suo
 /assets/branding/*-source.png
 /assets/branding/*-preview.png
+/.claude/

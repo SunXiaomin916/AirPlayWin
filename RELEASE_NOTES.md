@@ -1,45 +1,51 @@
-# AirPlayWin 1.0.2
+# AirPlayWin 1.1.0
 
-AirPlayWin 1.0.2 is a hardening release of the Classic RAOP receiver for Windows 11 x64. It
-contains the fixes from an independent code review and clean-machine verification pass; the
-supported profile and the compatibility boundary are unchanged from 1.0.1.
+AirPlayWin 1.1.0 adds the graphical application: a native Win32 window hosting a WebView2
+UI with a tray icon, persisted settings, autostart, firewall management, and a test-tone
+probe. The receiver core is unchanged from 1.0.2 — the console CLI and the GUI share the
+same `ReceiverHost` composition.
+
+## Added
+
+- **AirPlayWinApp.exe**: full graphical application.
+  - 首页: receiver start/stop, sender/session state, local volume, latency and quality
+    counters.
+  - 音频: output device selection or follow-default, low-latency (IAudioClient3),
+    Exclusive, strict-exclusive, test tone (440 Hz / 1 kHz / sweep / silence).
+  - 网络: device name with live DNS-SD republish, control ports, firewall rule status
+    with one-click install/remove (UAC elevation), discovery statistics.
+  - 高级: buffered-timing and receive-only PTP experiments, per-endpoint latency
+    calibration, autostart, minimize-to-tray, diagnostics interval, restart banner for
+    settings that need a receiver restart.
+  - 诊断: live transport/audio/clock/lifecycle counters and log-folder access.
+  - 关于: version, features, compatibility disclaimer, project link.
+- Settings persist to `%LOCALAPPDATA%\AirPlayWin\settings.json` (versioned, hand-rolled
+  JSON parser/writer, zero new dependencies).
+- Tray icon with open / start / stop / exit; closing the window minimizes to the tray by
+  default; second launch focuses the existing instance.
+- Receiver start/stop runs on a worker thread so WASAPI/DNS-SD setup can never stall the
+  UI message loop.
+- `--test-bridge`: automated end-to-end self test that loads the real UI in WebView2,
+  round-trips every command (start, getState, setConfig, setVolume, listDevices,
+  listInterfaces, calibration, autostart, firewall status, stop) through the real
+  receiver, and writes the result to `%LOCALAPPDATA%\AirPlayWin\test-bridge.json`.
+- Installer installs both executables plus the `ui` resources; the start-menu entry
+  launches the GUI, a diagnostics shortcut runs the console receiver; autostart registers
+  the GUI directly (no PowerShell wrapper); the uninstaller covers both executables and
+  the UI directory.
+- WebView2 SDK 1.0.4258.31 headers and the static loader are vendored under
+  `third_party/webview2` (WebView2 is an inbox Windows 11 component; the Evergreen
+  runtime is already installed on supported systems).
 
 ## Changed
 
-- Classic RAOP retransmission is functional end to end: resend requests are sent to the
-  sender's control port for missing runs, and loss gaps hold briefly so retransmitted copies
-  replay in place.
-- The decode worker sleeps on the jitter buffer between packets instead of spinning a CPU
-  core for the whole session.
-- Loss declaration uses a fixed reorder window, so one dropped packet yields one concealed
-  frame instead of a multi-packet stall followed by a burst.
-- Live sessions veto the transport idle-timeout scan (paused senders stay connected);
-  connections that never complete a request are hard-closed after the timeout.
-- Queue-overflow backpressure ends in a guarded hard resync instead of splicing dropped
-  frames into the waveform.
-- The audio transition guard defers lower-priority commands (quick Pause -> Resume can no
-  longer strand playback in silence); stop/pause fades follow live PCM through a partial
-  underrun; fade endpoints reach exactly zero.
-- The WASAPI output facade is serialized against Close with a lifecycle mutex; the sink
-  prefill is clamped to the output high-water target.
-- ALAC packets up to 32 KiB are accepted; the Media Foundation decoder drains transient
-  MF_E_NOTACCEPTING state.
-- The DNS-SD registration timeout path waits for the completion callback after cancelling.
-- Recovery retries back off exponentially; the stop event is created before services start;
-  autostart logs are pruned to 30 days.
-- PTP experiment: conformant minimal two-step Sync packets parse, stale FollowUps expire,
-  other-domain traffic is ignored while locked, and the resample ratio is a bounded
-  closed-loop depth servo instead of a fixed feed-forward ratio.
-- Group experiment: externally observed grandmaster changes trigger holdover, drained
-  members re-preroll before relock, lifecycle actions are emitted, past-boundary join
-  plans are refused, missed activations fault the member, and the skew analyzer requires
-  at least two complete pulses and rejects cross-pulse alias matches.
-- GitHub Actions CI runs Debug and Release builds and tests on push and pull requests; a
-  deterministic parser fuzz smoke test is part of the native suite; the repository now has
-  an MIT license.
+- The console CLI's receiver composition moved into `ReceiverHost`, shared verbatim by
+  the console and the GUI; console behavior and exit codes are unchanged.
 
 ## Verified
 
-- MSVC Debug and Release x64 builds with `/W4 /WX`.
-- Full native test suite (43 modules) plus the sync, anti-pop, and latency CI gates.
-- Clean-machine `--serve`, `--play`, device, and interface enumeration smoke tests.
+- MSVC Debug and Release x64 builds with `/W4 /WX` (both executables).
+- Full native test suite (42 modules) plus the sync, anti-pop, and latency CI gates.
+- `--test-bridge` passes all 12 checks against the real receiver on a clean machine.
+- Console `--serve`, `--play`, lifecycle smoke, and the GUI window render verified
+  locally.

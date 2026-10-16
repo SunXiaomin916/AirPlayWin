@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(AirPlayWin VERSION 1.0.2 LANGUAGES CXX)
+project(AirPlayWin VERSION 1.1.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "AirPlayWin requires Windows 11 and Windows native APIs")
@@ -27,6 +27,11 @@ configure_file(
 configure_file(
     cmake/AirPlayWinVersion.rc.in
     "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.rc"
+    @ONLY
+)
+configure_file(
+    cmake/AirPlayWinAppVersion.rc.in
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinAppVersion.rc"
     @ONLY
 )
 
@@ -108,6 +113,7 @@ airplaywin_set_warnings(airplaywin_windows)
 
 add_executable(AirPlayWin
     src/app/main.cpp
+    src/app/ReceiverHost.cpp
     src/app/WaveFileReader.cpp
     "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinVersion.rc"
 )
@@ -115,6 +121,29 @@ target_compile_features(AirPlayWin PRIVATE cxx_std_23)
 target_compile_definitions(AirPlayWin PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(AirPlayWin PRIVATE airplaywin_core airplaywin_windows)
 airplaywin_set_warnings(AirPlayWin)
+
+# Graphical application: native Win32 window hosting the WebView2 UI, with
+# tray, settings persistence, and the same receiver core as the CLI.
+add_executable(AirPlayWinApp WIN32
+    src/ui/AppMain.cpp
+    src/ui/AppWindow.cpp
+    src/app/PlatformCommands.cpp
+    src/app/ReceiverHost.cpp
+    src/app/SettingsStore.cpp
+    src/app/TestTonePlayer.cpp
+    "${AIRPLAYWIN_GENERATED_DIR}/AirPlayWinAppVersion.rc"
+)
+target_include_directories(AirPlayWinApp PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/build/native/include"
+)
+target_compile_features(AirPlayWinApp PRIVATE cxx_std_23)
+target_compile_definitions(AirPlayWinApp PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(AirPlayWinApp PRIVATE
+    airplaywin_core airplaywin_windows
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/build/native/x64/WebView2LoaderStatic.lib"
+    advapi32 shell32 shlwapi version
+)
+airplaywin_set_warnings(AirPlayWinApp)
 
 if(AIRPLAYWIN_BUILD_TESTS)
     enable_testing()
@@ -124,7 +153,8 @@ if(AIRPLAYWIN_BUILD_TESTS)
     endif()
 endif()
 
-install(TARGETS AirPlayWin RUNTIME DESTINATION bin)
+install(TARGETS AirPlayWin AirPlayWinApp RUNTIME DESTINATION bin)
+install(DIRECTORY src/ui/resources DESTINATION ui)
 install(FILES README.md RELEASE_NOTES.md SECURITY.md DESTINATION .)
 install(FILES
     assets/branding/AirPlayWin-icon-1024.png

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirPlayWin</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">♫</div>
+      <div class="brand-text">
+        <div class="brand-name">AirPlayWin</div>
+        <div class="brand-sub" id="brand-version">v1.0.2</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-page="home"><span class="nav-icon">◉</span>首页</button>
+      <button class="nav-item" data-page="audio"><span class="nav-icon">♪</span>音频</button>
+      <button class="nav-item" data-page="network"><span class="nav-icon">⇄</span>网络</button>
+      <button class="nav-item" data-page="advanced"><span class="nav-icon">⚙</span>高级</button>
+      <button class="nav-item" data-page="diagnostics"><span class="nav-icon">▤</span>诊断</button>
+      <button class="nav-item" data-page="about"><span class="nav-icon">ⓘ</span>关于</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-pill" id="sidebar-status"><span class="dot"></span>未运行</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 id="page-title">首页</h1>
+        <div class="topbar-device" id="topbar-device">设备名加载中…</div>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-ghost" id="btn-tray" title="最小化到系统托盘">—</button>
+        <button class="btn btn-primary btn-power" id="btn-power">
+          <span class="power-dot"></span><span id="btn-power-text">启动接收器</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="content">
+      <!-- 首页 -->
+      <div class="page active" id="page-home">
+        <div class="cards">
+          <div class="card card-hero">
+            <div class="hero-status">
+              <div class="hero-icon" id="hero-icon">◌</div>
+              <div>
+                <div class="hero-title" id="hero-title">接收器未运行</div>
+                <div class="hero-sub" id="hero-sub">启动后，iPhone / iPad / Mac 即可发现这台电脑</div>
+              </div>
+            </div>
+            <div class="hero-actions">
+              <button class="btn btn-primary" id="home-start">立即启动</button>
+              <button class="btn" id="home-tone">播放测试音</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">当前播放</div>
+            <div class="kv-list">
+              <div class="kv"><span class="kv-label">发送设备</span><span class="kv-value" id="st-sender">—</span></div>
+              <div class="kv"><span class="kv-label">来源地址</span><span class="kv-value" id="st-address">—</span></div>
+              <div class="kv"><span class="kv-label">会话状态</span><span class="kv-value" id="st-state">—</span></div>
+              <div class="kv"><span class="kv-label">输出延迟估算</span><span class="kv-value" id="st-latency">—</span></div>
+              <div class="kv"><span class="kv-label">接收器附加延迟</span><span class="kv-value" id="st-recv-latency">—</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">本机音量</div>
+            <div class="card-desc">调节 AirPlayWin 在 Windows 音量合成器中的音量。</div>
+            <div class="volume-row">
+              <span class="volume-icon">🔇</span>
+              <input type="range" min="0" max="100" value="100" id="volume-slider">
+              <span class="volume-icon">🔊</span>
+              <span class="volume-value" id="volume-value">100%</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">快速状态</div>
+            <div class="stat-grid" id="home-stats">
+              <div class="stat"><div class="stat-value" id="hs-packets">0</div><div class="stat-label">已收数据包</div></div>
+              <div class="stat"><div class="stat-value" id="hs-lost">0</div><div class="stat-label">丢包</div></div>
+              <div class="stat"><div class="stat-value" id="hs-underrun">0</div><div class="stat-label">缓冲不足</div></div>
+              <div class="stat"><div class="stat-value" id="hs-clicks">0</div><div class="stat-label">爆音事件</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 音频 -->
+      <div class="page" id="page-audio">
+        <div class="cards">
+          <div class="card card-wide">
+            <div class="card-title">输出设备</div>
+            <div class="card-desc">选择本机声音输出的目标设备。拔插设备后点击“刷新”重新枚举。</div>
+            <div class="row">
+              <select id="audio-device" class="select"></select>
+              <button class="btn" id="audio-refresh">刷新</button>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="audio-follow-default">
+              <span>跟随系统默认设备（默认设备切换时自动恢复）</span>
+            </label>
+            <div class="hint">✓ 推荐：保持跟随默认设备，AirPlayWin 会在 Windows 默认输出变化时自动切换。</div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">输出模式</div>
+            <label class="check">
+              <input type="checkbox" id="audio-low-latency">
+              <span>低延迟模式（IAudioClient3 最小周期）</span>
+            </label>
+            <div class="hint">✓ 使用设备支持的最小缓冲周期降低输出延迟。设备不支持时自动回退并记录原因。</div>
+            <label class="check">
+              <input type="checkbox" id="audio-exclusive">
+              <span>独占模式（Exclusive WASAPI）</span>
+            </label>
+            <div class="hint">✓ 绕过系统混音、延迟最低，适合 USB DAC；但其他程序将无法同时使用该设备。</div>
+            <label class="check">
+              <input type="checkbox" id="audio-strict-exclusive">
+              <span>严格独占（失败时不回退到共享模式）</span>
+            </label>
+            <div class="hint">✓ 设备被占用或格式不支持时直接报错，而不是悄悄降级。</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">测试音</div>
+            <div class="card-desc">无需 iPhone 即可验证声音通路。</div>
+            <div class="row">
+              <select id="tone-signal" class="select">
+                <option value="440">440 Hz 正弦</option>
+                <option value="1000">1 kHz 正弦</option>
+                <option value="sweep">扫频</option>
+                <option value="silence">静音</option>
+              </select>
+              <select id="tone-seconds" class="select">
+                <option value="3">3 秒</option>
+                <option value="5" selected>5 秒</option>
+                <option value="10">10 秒</option>
+              </select>
+              <button class="btn btn-primary" id="tone-play">播放</button>
+            </div>
+            <div class="hint" id="tone-result"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 网络 -->
+      <div class="page" id="page-network">
+        <div class="cards">
+          <div class="card card-wide">
+            <div class="card-title">设备名称与端口</div>
+            <div class="card-desc">iPhone / Mac 的 AirPlay 列表中显示的名称。名称修改立即生效。</div>
+            <div class="row">
+              <input type="text" id="net-name" class="input" maxlength="63" placeholder="书房电脑">
+              <button class="btn" id="net-apply-name">应用</button>
+            </div>
+            <div class="row">
+              <label class="field-label">控制端口（TCP）</label>
+              <input type="number" id="net-raop-port" class="input input-narrow" min="1" max="65535">
+              <label class="field-label">实验端口</label>
+              <input type="number" id="net-airplay-port" class="input input-narrow" min="1" max="65535">
+            </div>
+            <div class="hint">✓ 端口修改需重启接收器后生效。默认 5000 已被 iPhone 广泛使用。</div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">防火墙</div>
+            <div class="card-desc">iPhone 连接需要 Windows 防火墙放行（仅“专用网络”配置文件）。</div>
+            <div class="row">
+              <button class="btn" id="fw-status">检查状态</button>
+              <button class="btn btn-primary" id="fw-install">安装规则</button>
+              <button class="btn btn-danger" id="fw-remove">移除规则</button>
+            </div>
+            <div class="hint" id="fw-result">安装需要管理员权限，会弹出系统确认。</div>
+            <div class="hint">⚠ 请确认当前 Wi-Fi 在 Windows 设置中为“专用网络”。公共网络下规则不会生效。</div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">发现状态</div>
+            <div class="kv-list">
+              <div class="kv"><span class="kv-label">广播名称</span><span class="kv-value" id="st-adv-name">—</span></div>
+              <div class="kv"><span class="kv-label">活动网卡</span><span class="kv-value" id="st-interfaces">—</span></div>
+              <div class="kv"><span class="kv-label">服务注册数</span><span class="kv-value" id="st-registrations">—</span></div>
+              <div class="kv"><span class="kv-label">名称冲突</span><span class="kv-value" id="st-conflicts">—</span></div>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="net-include-virtual">
+              <span>包含虚拟网卡（VPN / WSL / Hyper-V）</span>
+            </label>
+            <div class="hint">✓ 默认只广播物理网卡。VPN 接入时若需通过 VPN 播放再开启（注意安全）。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 高级 -->
+      <div class="page" id="page-advanced">
+        <div class="cards">
+          <div class="card card-wide">
+            <div class="card-title">实验：缓冲计时</div>
+            <label class="check">
+              <input type="checkbox" id="adv-buffered">
+              <span>启用本地缓冲计时（RTP → QPC 锚点）</span>
+            </label>
+            <div class="hint">✓ 将 RTP 时间戳映射到本地高精度时钟并按目标时刻提交。不广播完整的 AirPlay 2 计时。</div>
+            <div class="row">
+              <label class="field-label">缓冲时长（毫秒）</label>
+              <input type="number" id="adv-buffered-ms" class="input input-narrow" min="20" max="2000" value="120">
+            </div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">实验：PTP 时钟同步</div>
+            <label class="check">
+              <input type="checkbox" id="adv-ptp">
+              <span>启用只收 PTP 时钟伺服（UDP 319/320）</span>
+            </label>
+            <div class="hint">✓ 被动接收 Sync/Follow_Up 校准本机 QPC 并微量重采样。需要局域网中存在 PTP 主时钟。</div>
+            <div class="row">
+              <label class="field-label">PTP 网卡 IPv4</label>
+              <input type="text" id="adv-ptp-if" class="input" value="0.0.0.0" placeholder="0.0.0.0（默认）">
+            </div>
+            <div class="hint">⚠ 缓冲计时与 PTP 伺服互斥，同时开启会被拒绝。</div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">端点延迟校准</div>
+            <div class="card-desc">不同 USB DAC / 蓝牙设备有不同的隐藏输出延迟。为当前输出设备保存一个偏移量（微秒），接收器会把它计入延迟模型。</div>
+            <div class="row">
+              <label class="field-label">偏移（微秒）</label>
+              <input type="number" id="adv-offset-us" class="input input-narrow" min="-1000000" max="1000000" value="0">
+              <button class="btn" id="adv-cal-load">读取当前设备</button>
+              <button class="btn btn-primary" id="adv-cal-save">保存</button>
+              <button class="btn" id="adv-cal-clear">清除</button>
+            </div>
+            <div class="hint" id="cal-result">未读取。当前输出设备见“音频”页。</div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-title">应用行为</div>
+            <label class="check">
+              <input type="checkbox" id="adv-autostart">
+              <span>开机自动启动（登录后最小化到托盘）</span>
+            </label>
+            <div class="hint">✓ 写入当前用户的“启动”注册表项。</div>
+            <label class="check">
+              <input type="checkbox" id="adv-minimize-tray">
+              <span>关闭窗口时最小化到托盘（接收器继续工作）</span>
+            </label>
+            <div class="hint">✓ 关闭勾选后，点 × 会完全退出。</div>
+            <div class="row">
+              <label class="field-label">诊断推送间隔（秒）</label>
+              <input type="number" id="adv-diag-interval" class="input input-narrow" min="1" max="60" value="1">
+            </div>
+          </div>
+        </div>
+        <div class="restart-banner" id="restart-banner" hidden>
+          ⚠ 部分设置需要重启接收器才能生效。
+          <button class="btn btn-small" id="restart-now">立即重启接收器</button>
+        </div>
+      </div>
+
+      <!-- 诊断 -->
+      <div class="page" id="page-diagnostics">
+        <div class="cards">
+          <div class="card">
+            <div class="card-title">传输层</div>
+            <div class="kv-list">
+              <div class="kv"><span class="kv-label">会话 / 请求</span><span class="kv-value" id="d-control">—</span></div>
+              <div class="kv"><span class="kv-label">数据包（重传/请求）</span><span class="kv-value" id="d-packets">—</span></div>
+              <div class="kv"><span class="kv-label">丢 / 晚 / 重 / 乱序</span><span class="kv-value" id="d-loss">—</span></div>
+              <div class="kv"><span class="kv-label">解码 / 隐藏 / 解码错误</span><span class="kv-value" id="d-decode">—</span></div>
+              <div class="kv"><span class="kv-label">网络抖动（p95）</span><span class="kv-value" id="d-jitter">—</span></div>
+              <div class="kv"><span class="kv-label">协议延迟 / 接收器附加</span><span class="kv-value" id="d-latency">—</span></div>
+              <div class="kv"><span class="kv-label">时钟伺服</span><span class="kv-value" id="d-servo">—</span></div>
+              <div class="kv"><span class="kv-label">TCP（RAOP）活动连接</span><span class="kv-value" id="d-tcp">—</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">音频层</div>
+            <div class="kv-list">
+              <div class="kv"><span class="kv-label">输出模式 / 格式</span><span class="kv-value" id="d-output">—</span></div>
+              <div class="kv"><span class="kv-label">队列深度 / 周期</span><span class="kv-value" id="d-queue">—</span></div>
+              <div class="kv"><span class="kv-label">缓冲不足 / 已渲染</span><span class="kv-value" id="d-underrun">—</span></div>
+              <div class="kv"><span class="kv-label">过渡状态</span><span class="kv-value" id="d-transition">—</span></div>
+              <div class="kv"><span class="kv-label">爆音事件 / 最大阶跃</span><span class="kv-value" id="d-clickpop">—</span></div>
+              <div class="kv"><span class="kv-label">数值异常 / 削波 / DC</span><span class="kv-value" id="d-numeric">—</span></div>
+              <div class="kv"><span class="kv-label">设备切换 / 恢复失败</span><span class="kv-value" id="d-device">—</span></div>
+              <div class="kv"><span class="kv-label">硬重同步 / 安全静音</span><span class="kv-value" id="d-resync">—</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">生命周期</div>
+            <div class="kv-list">
+              <div class="kv"><span class="kv-label">挂起 / 唤醒事件</span><span class="kv-value" id="d-power">—</span></div>
+              <div class="kv"><span class="kv-label">恢复尝试 / 失败</span><span class="kv-value" id="d-recovery">—</span></div>
+              <div class="kv"><span class="kv-label">名称冲突 / 注册失败</span><span class="kv-value" id="d-discovery">—</span></div>
+              <div class="kv"><span class="kv-label">解析错误 / 拒绝请求</span><span class="kv-value" id="d-parse">—</span></div>
+            </div>
+            <div class="card-desc" style="margin-top:12px">日志文件保存在
+              <span class="code">%LOCALAPPDATA%\AirPlayWin\Logs</span></div>
+            <button class="btn" id="diag-open-logs">打开日志文件夹</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 关于 -->
+      <div class="page" id="page-about">
+        <div class="cards">
+          <div class="card card-wide">
+            <div class="about-row">
+              <div class="brand-icon about-icon">♫</div>
+              <div>
+                <div class="card-title" style="margin:0">AirPlayWin <span id="about-version">v1.0.2</span></div>
+                <div class="card-desc">Windows 原生 AirPlay / RAOP 音频接收器</div>
+              </div>
+            </div>
+            <div class="card-desc">把 Windows 电脑变成局域网无线音箱：iPhone、iPad 和 Mac 可以直接把音乐投放到本机的扬声器、耳机、USB DAC 或 HDMI 输出。</div>
+            <ul class="about-list">
+              <li>Classic AirPlay / RAOP：Apple Lossless（ALAC）与 L16 音频</li>
+              <li>防爆音：所有启动/停止/切换都经过淡入淡出与安全静音</li>
+              <li>低延迟：IAudioClient3 / 独占模式 + 自适应抖动缓冲</li>
+              <li>手机音量自动同步到 Windows 音量合成器</li>
+              <li>断线恢复、睡眠唤醒恢复、默认设备热切换</li>
+            </ul>
+            <div class="hint">⚠ 兼容性声明：本软件是基于公开资料与开源参考实现的实验性兼容接收器，未经 Apple 官方认证；“AirPlay” 商标归 Apple Inc. 所有。仅建议在可信的专用局域网中使用（接收器采用开放认证）。</div>
+            <div class="row">
+              <button class="btn" id="about-github">项目主页（GitHub）</button>
+              <button class="btn" id="about-logs">打开日志文件夹</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+<script src="app.js"></script>
+</body>
+</html>

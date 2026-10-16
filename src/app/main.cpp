@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "AirPlayWinVersion.h"
+#include "app/ReceiverHost.h"
 #include "core/audio/LoopbackLatencyAnalyzer.h"
 #include "core/audio/TestSignalGenerator.h"
 #include "core/crypto/OpenSessionAuthenticator.h"
@@ -1595,147 +1596,38 @@ void PrintRecoveryDiagnostics(
         std::wcerr << L"RAOP and AirPlay control ports must be different.\n";
         return 15;
     }
-    auto receiver_device_id = command.discovery_device_id;
-    if (airplaywin::discovery::IsZeroDeviceId(receiver_device_id)) {
-        receiver_device_id = WindowsNetworkInterfaceEnumerator::SystemDeviceId();
-    }
-    WindowsRaopCryptoProvider raop_crypto{receiver_device_id};
-    if (command.classic_raop && !raop_crypto.Available()) {
-        std::wcerr << L"Classic RAOP cryptographic provider initialization failed.\n";
-        return 26;
-    }
-    airplaywin::crypto::OpenSessionAuthenticator authenticator;
-    WindowsAudioStreamSink audio_sink{WasapiOutputOptions{
-        .device_id = command.device_id,
-        .follow_default_device = command.device_id.empty(),
-        .output_mode = command.exclusive_audio ? AudioOutputMode::Exclusive
-                                               : AudioOutputMode::Shared,
-        .low_latency = command.low_latency,
-        .allow_shared_fallback = !command.strict_exclusive,
-        .ring_capacity_milliseconds = 500U,
-        .target_queue_milliseconds = command.exclusive_audio
-                                         ? 10U
-                                         : (command.low_latency ? 5U : 30U),
-        .endpoint_calibration_offset_microseconds =
-            command.endpoint_calibration_offset_microseconds,
-    }, command.exclusive_audio ? 10U : (command.low_latency ? 5U : 20U),
-       command.low_latency ? 15U : 30U};
-    std::shared_ptr<airplaywin::timing::PtpClockDomain> ptp_clock_domain;
-    std::unique_ptr<WindowsPtpTimingService> ptp_service;
-    if (command.experimental_ptp_timing) {
-        ptp_clock_domain = std::make_shared<airplaywin::timing::PtpClockDomain>(
-            airplaywin::timing::ClockServoConfig{
-                .local_clock_frequency = QpcClock::Frequency(),
-            });
-        ptp_service = std::make_unique<WindowsPtpTimingService>(ptp_clock_domain);
-    }
-    WindowsRtpTransportController media_transport{
-        audio_sink,
-        {.enable_adaptive_jitter = command.low_latency,
-         .enable_buffered_timing = command.experimental_buffered_timing,
-         .enable_ptp_timing = command.experimental_ptp_timing,
-         .buffered_timing_milliseconds = command.buffered_timing_milliseconds,
-         .ptp_clock_domain = ptp_clock_domain,
-         .endpoint_latency_offset_microseconds =
-             command.endpoint_calibration_offset_microseconds}};
-    airplaywin::protocol::AirPlayControlService control{
-        authenticator, airplaywin::session::ActiveSessionPolicy::RejectNew,
-        airplaywin::protocol::ParserLimits{}, &media_transport,
-        command.classic_raop ? &raop_crypto : nullptr};
-    IocpTcpServer raop_server{control};
-    IocpTcpServer airplay_server{control};
-    airplaywin::discovery::DiscoveryConfig discovery_config{
-        .device_name = command.discovery_name,
-        .device_id = receiver_device_id,
-        .raop_port = command.raop_port,
-        .airplay_port = command.airplay_port,
-        .advertise_raop = true,
-        .advertise_airplay = !command.classic_raop,
-        .classic_raop = command.classic_raop,
-        .include_virtual_interfaces = command.include_virtual_interfaces,
-    };
-    WindowsDiscoveryService discovery;
-    auto stop_services = [&]() noexcept {
-        discovery.Stop();
-        if (!command.classic_raop) {
-            airplay_server.Stop();
-        }
-        raop_server.Stop();
-        if (ptp_service) {
-            ptp_service->Stop();
-        }
-    };
-    auto start_services = [&]() -> int {
-        if (ptp_service && !ptp_service->Start({
-                               .multicast_interface_address =
-                                   command.ptp_interface_address})) {
-            return 25;
-        }
-        if (!raop_server.Start({.bind_address = "0.0.0.0", .port = command.raop_port})) {
-            if (ptp_service) {
-                ptp_service->Stop();
-            }
-            return 16;
-        }
-        if (!command.classic_raop &&
-            !airplay_server.Start(
-                {.bind_address = "0.0.0.0", .port = command.airplay_port})) {
-            raop_server.Stop();
-            if (ptp_service) {
-                ptp_service->Stop();
-            }
-            return 17;
-        }
-        if (!discovery.Start(discovery_config)) {
-            if (!command.classic_raop) {
-                airplay_server.Stop();
-            }
-            raop_server.Stop();
-            if (ptp_service) {
-                ptp_service->Stop();
-            }
-            return 18;
-        }
-        return 0;
-    };
-    auto runtime_error = [&]() noexcept {
-        const auto discovery_error = discovery.Diagnostics().last_error;
-        const auto airplay_error = command.classic_raop
-                                       ? 0U
-                                       : airplay_server.Diagnostics().last_error;
-        const auto raop_error = raop_server.Diagnostics().last_error;
-        const auto ptp_error = ptp_service ? ptp_service->Diagnostics().last_error : 0U;
-        return ptp_error != 0U
-                   ? ptp_error
-                   : discovery_error != 0U
-                   ? discovery_error
-                   : (airplay_error != 0U ? airplay_error : raop_error);
-    };
-
-    airplaywin::lifecycle::RecoveryCoordinator recovery;
-    ScopedConsoleControlHandler console_control;
+    // Created before services start so --stop works during the startup
+    // window.
     ReceiverStopEvent stop_event;
     if (!stop_event.Available()) {
         std::wcerr << L"Unable to create the receiver stop signal.\n";
         return 27;
     }
-
-    const auto start_result = start_services();
-    if (start_result != 0) {
-        std::wcerr << L"Failed to start receiver services; stage=" << start_result
-                   << L", error=" << runtime_error() << L".\n";
-        return start_result;
+    ScopedConsoleControlHandler console_control;
+    airplaywin::app::ReceiverHost host{airplaywin::app::ReceiverHostConfig{
+        .device_name = command.discovery_name,
+        .device_id = command.discovery_device_id,
+        .output_device_id = command.device_id,
+        .low_latency = command.low_latency,
+        .exclusive_audio = command.exclusive_audio,
+        .strict_exclusive = command.strict_exclusive,
+        .raop_port = command.raop_port,
+        .airplay_port = command.airplay_port,
+        .classic_raop = command.classic_raop,
+        .include_virtual_interfaces = command.include_virtual_interfaces,
+        .experimental_buffered_timing = command.experimental_buffered_timing,
+        .buffered_timing_milliseconds = command.buffered_timing_milliseconds,
+        .experimental_ptp_timing = command.experimental_ptp_timing,
+        .ptp_interface_address = command.ptp_interface_address,
+        .endpoint_calibration_offset_microseconds =
+            command.endpoint_calibration_offset_microseconds,
+        .diagnostics_interval_seconds = command.diagnostics_interval_seconds,
+    }};
+    if (!host.Start()) {
+        const auto error = host.LastError();
+        std::wcerr << L"Failed to start receiver services; stage=" << error << L".\n";
+        return error != 0U ? static_cast<int>(error) : 19;
     }
-
-    WindowsPowerEventMonitor power_monitor;
-    if (!power_monitor.Start()) {
-        std::wcerr << L"Power notification registration failed; receiver remains available, "
-                      L"error="
-                   << power_monitor.Diagnostics().last_error << L".\n";
-    }
-    bool services_running = true;
-    auto next_recovery_attempt = std::chrono::steady_clock::time_point{};
-    std::uint32_t consecutive_recovery_failures = 0U;
 
     std::wcout << L"AirPlayWin " AIRPLAYWIN_VERSION_STRING_W
                << L" receiver ready: RAOP TCP " << command.raop_port;
@@ -1756,6 +1648,7 @@ void PrintRecoveryDiagnostics(
     std::wcout << L"  Discovery requires a Windows Private network profile. If devices cannot "
                   L"see or connect to this receiver, run \"AirPlayWin --install-firewall-rules\" "
                   L"once as Administrator and check the network profile in Windows Settings.\n";
+
     const auto deadline =
         command.run_until_stopped
             ? std::chrono::steady_clock::time_point::max()
@@ -1775,78 +1668,40 @@ void PrintRecoveryDiagnostics(
            !stop_event.Requested()) {
         const auto now = std::chrono::steady_clock::now();
         if (!lifecycle_smoke_suspended && now >= lifecycle_suspend_at) {
-            power_monitor.RecordPowerBroadcast(PBT_APMSUSPEND);
+            host.PostSimulatedPowerEvent(true);
             lifecycle_smoke_suspended = true;
             lifecycle_resume_at = now + std::chrono::seconds{1};
         }
         if (lifecycle_smoke_suspended && !lifecycle_smoke_resumed &&
             now >= lifecycle_resume_at) {
-            power_monitor.RecordPowerBroadcast(PBT_APMRESUMEAUTOMATIC);
+            host.PostSimulatedPowerEvent(false);
             lifecycle_smoke_resumed = true;
         }
-        while (const auto event = power_monitor.Poll()) {
-            if (*event == PowerLifecycleEvent::Suspend) {
-                recovery.OnSuspend();
-                if (services_running) {
-                    stop_services();
-                    services_running = false;
-                }
-                std::wcout << L"Receiver suspended: sessions and audio were safely stopped.\n";
-            } else {
-                recovery.OnResume();
-                next_recovery_attempt = now;
-                std::wcout << L"Receiver resume observed: recovery scheduled.\n";
-            }
-        }
-        if (!services_running && recovery.RecoveryRequired() &&
-            now >= next_recovery_attempt) {
-            const auto recovery_result = start_services();
-            services_running = recovery_result == 0;
-            recovery.RecordRecoveryResult(services_running, runtime_error());
-            if (!services_running) {
-                // Exponential backoff so a persistent failure (e.g. Wi-Fi
-                // still down after resume) does not retry at a fixed 1 Hz
-                // forever: 1, 2, 4, 8, 16, 30, 30, ... seconds.
-                ++consecutive_recovery_failures;
-                const auto shift = std::min(consecutive_recovery_failures, 5U);
-                const auto delay_seconds = std::min<std::uint32_t>(30U, 1U << shift);
-                next_recovery_attempt = now + std::chrono::seconds{delay_seconds};
-            } else {
-                consecutive_recovery_failures = 0U;
-            }
-            if (services_running) {
-                std::wcout << L"Receiver services recovered and DNS-SD was republished.\n";
-            }
-        }
         if (now >= next_diagnostics) {
-            PrintControlDiagnostics(control.Diagnostics(), raop_server.Diagnostics(),
-                                    airplay_server.Diagnostics(), audio_sink.Diagnostics(),
+            const auto snapshot = host.Snapshot();
+            PrintControlDiagnostics(snapshot.control, snapshot.raop_server,
+                                    snapshot.airplay_server, snapshot.audio,
                                     last_request_trace_sequence);
-            PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
-            if (ptp_service) {
-                PrintPtpDiagnostics(ptp_service->Diagnostics());
+            PrintRecoveryDiagnostics(snapshot.recovery, snapshot.power);
+            if (snapshot.ptp_enabled) {
+                PrintPtpDiagnostics(snapshot.ptp);
             }
             next_diagnostics += interval;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
 
-    const auto raop_diagnostics = raop_server.Diagnostics();
-    const auto airplay_diagnostics = airplay_server.Diagnostics();
-    const auto control_diagnostics = control.Diagnostics();
-    PrintControlDiagnostics(control_diagnostics, raop_diagnostics, airplay_diagnostics,
-                            audio_sink.Diagnostics(), last_request_trace_sequence);
-    PrintRecoveryDiagnostics(recovery.Diagnostics(), power_monitor.Diagnostics());
-    if (ptp_service) {
-        PrintPtpDiagnostics(ptp_service->Diagnostics());
+    const auto final_snapshot = host.Snapshot();
+    host.Stop();
+    PrintControlDiagnostics(final_snapshot.control, final_snapshot.raop_server,
+                            final_snapshot.airplay_server, final_snapshot.audio,
+                            last_request_trace_sequence);
+    PrintRecoveryDiagnostics(final_snapshot.recovery, final_snapshot.power);
+    if (final_snapshot.ptp_enabled) {
+        PrintPtpDiagnostics(final_snapshot.ptp);
     }
-    recovery.Stop();
-    power_monitor.Stop();
-    if (services_running) {
-        stop_services();
-    }
-    return raop_diagnostics.transport_errors == 0U &&
-                   airplay_diagnostics.transport_errors == 0U
+    return final_snapshot.raop_server.transport_errors == 0U &&
+                   final_snapshot.airplay_server.transport_errors == 0U
                ? 0
                : 19;
 }

@@ -1,18 +1,54 @@
-# AirPlayWin 1.0
+# AirPlayWin 1.1
 
 **English** | [简体中文](README.zh-CN.md)
 
 AirPlayWin is a Windows 11 x64 Classic AirPlay/RAOP audio receiver. iPhone, iPad, and Mac senders
 can discover the computer as a speaker and play Apple Lossless or L16 audio through the default
-Windows output or a selected endpoint. The supported v1.0 profile includes legacy RSA-AES,
-Windows Media Foundation ALAC decoding, event-driven WASAPI, anti-pop transitions, device
-recovery, and synchronization of sender volume with the `AirPlayWin.exe` Windows mixer session.
+Windows output or a selected endpoint. The supported v1.1 profile includes a full graphical
+application (native Win32 window with a WebView2 UI, tray icon, persisted settings, autostart,
+firewall management, and a test-tone probe), legacy RSA-AES, Windows Media Foundation ALAC
+decoding, event-driven WASAPI, anti-pop transitions, device recovery, and synchronization of
+sender volume with the `AirPlayWin.exe` Windows mixer session.
 
 The architecture also contains experimental buffered timing, receive-only PTP, group
 coordination, skew analysis, and regression tools developed through phases 1–12. Those
-experiments do not make v1.0 a complete AirPlay 2 implementation. Pairing/FairPlay, modern
-buffered sessions, inter-host multi-room control, video, and WinUI remain outside the release.
+experiments do not make v1.1 a complete AirPlay 2 implementation. Pairing/FairPlay, modern
+buffered sessions, inter-host multi-room control, and video remain outside the release.
 Read [SECURITY.md](SECURITY.md) before running the open local-network receiver.
+
+## The graphical application
+
+`AirPlayWinApp.exe` is the supported way to use the receiver. It hosts the same core as the
+console CLI and exposes every feature on a settings page:
+
+- **首页**: receiver start/stop, the current sender and session state, local volume, latency
+  and quality counters.
+- **音频**: output device selection (or follow the Windows default), low-latency
+  (`IAudioClient3`), Exclusive mode, strict-exclusive, and a 440 Hz / 1 kHz / sweep / silence
+  test tone.
+- **网络**: device name (live DNS-SD republish), control ports, firewall rule status with
+  one-click install/remove (UAC elevation), and discovery statistics.
+- **高级**: buffered-timing and receive-only PTP experiments, per-endpoint latency
+  calibration, autostart, minimize-to-tray, and the diagnostics push interval. Settings that
+  need a receiver restart show a restart banner.
+- **诊断**: live transport, audio, clock, and lifecycle counters, plus one-click access to
+  the log folder.
+- **关于**: version, feature list, compatibility disclaimer, and the project link.
+
+Settings persist to `%LOCALAPPDATA%\AirPlayWin\settings.json`; logs land in
+`%LOCALAPPDATA%\AirPlayWin\Logs`. Closing the window minimizes to the tray by default (the
+receiver keeps working); the tray menu offers open / start / stop / exit. A second launch
+focuses the existing instance.
+
+Run the receiver without the GUI using the console CLI:
+
+```powershell
+.\AirPlayWin.exe --serve --name "Living Room PC" --run-until-stopped
+```
+
+The GUI's bridge has an automated end-to-end self test
+(`AirPlayWinApp.exe --test-bridge`) that starts the real receiver, round-trips every command
+through the WebView2 UI, and writes the result to `%LOCALAPPDATA%\AirPlayWin\test-bridge.json`.
 
 ## Phase 1 capabilities
 

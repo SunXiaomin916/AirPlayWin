@@ -1,4 +1,4 @@
-# AirPlayWin 1.0
+# AirPlayWin 1.1
 
 [English](README.md) | **简体中文**
 
@@ -10,12 +10,38 @@ AirPlayWin 是一个面向 Windows 11 x64 的原生 Classic AirPlay/RAOP 音频�
 iPhone、iPad 和 Mac 将 Windows 电脑识别为无线音箱，并通过默认扬声器、耳机、USB DAC、
 HDMI 或指定的 Windows 音频端点播放 Apple Lossless（ALAC）或 L16 音频。
 
-当前稳定版为 **v1.0.2**。它采用 C++23、CMake、Winsock2/IOCP、WASAPI、QPC、Windows
-CNG 和 Media Foundation 实现，核心音频引擎与协议、平台及未来 UI 层保持解耦。
+当前稳定版为 **v1.1.0**。它采用 C++23、CMake、Winsock2/IOCP、WASAPI、QPC、Windows
+CNG 和 Media Foundation 实现，核心音频引擎与协议、平台及 UI 层保持解耦。图形界面
+（AirPlayWinApp.exe）基于原生 Win32 窗口 + Windows 内置的 WebView2，带系统托盘、
+设置持久化、开机自启与防火墙管理。
 
 > [!IMPORTANT]
-> v1.0.2 支持的是经过实际播放验证的 **Classic AirPlay/RAOP 音频**，不是完整 AirPlay 2。
-> 现代 Pairing/FairPlay、完整 PTP、多主机多房间、视频投屏和 WinUI 尚未包含在稳定版中。
+> v1.1.0 支持的是经过实际播放验证的 **Classic AirPlay/RAOP 音频**，不是完整 AirPlay 2。
+> 现代 Pairing/FairPlay、完整 PTP、多主机多房间、视频投屏尚未包含在稳定版中。
+
+## 图形界面
+
+安装后从开始菜单启动 **AirPlayWin**，即可使用完整的图形界面：
+
+- **首页**：接收器启动/停止、当前发送设备与会话状态、本机音量、延迟与播放质量统计。
+- **音频**：输出设备选择（或跟随系统默认）、低延迟（IAudioClient3）、独占模式、
+  严格独占，以及 440 Hz / 1 kHz / 扫频 / 静音测试音。
+- **网络**：设备名（修改立即重新广播）、控制端口、防火墙规则一键安装/移除（自动
+  请求管理员权限）、发现状态统计。
+- **高级**：缓冲计时与 PTP 时钟实验、端点延迟校准、开机自启、关闭最小化到托盘、
+  诊断推送间隔。需要重启接收器的设置会显示重启提示条。
+- **诊断**：实时传输/音频/时钟/生命周期指标，一键打开日志文件夹。
+- **关于**：版本、功能列表、兼容性声明与项目链接。
+
+设置保存在 `%LOCALAPPDATA%\AirPlayWin\settings.json`，日志在
+`%LOCALAPPDATA%\AirPlayWin\Logs`。点击窗口 × 默认最小化到托盘（接收器继续工作），
+托盘菜单提供 打开 / 开始接收 / 停止接收 / 退出。重复启动会聚焦已有窗口。
+
+不带界面的命令行接收器（诊断用）：
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\AirPlayWin\AirPlayWin.exe" --serve --name "Living Room PC" --run-until-stopped
+```
 
 ## 主要功能
 
@@ -38,8 +64,8 @@ CNG 和 Media Foundation 实现，核心音频引擎与协议、平台及未来 
 
 从 [GitHub Releases](https://github.com/SunXiaomin916/AirPlayWin/releases/latest) 下载：
 
-- `AirPlayWin-1.0.2-windows-x64.zip`
-- `AirPlayWin-1.0.2-windows-x64.zip.sha256`
+- `AirPlayWin-1.1.0-windows-x64.zip`
+- `AirPlayWin-1.1.0-windows-x64.zip.sha256`
 
 下载后可先验证 SHA-256：
 
@@ -225,7 +251,6 @@ v1.0.1 没有实现 AirPlay Pairing、PIN 或每个发送端的授权。任何�
 - 不支持现代 AirPlay 2 Pairing/FairPlay。
 - 不支持完整双向 PTP 和正式多房间播放。
 - 不支持视频、屏幕镜像或照片投送。
-- 尚无 WinUI 图形界面。
 - 正式 ZIP 当前未使用生产 Authenticode 证书签名。
 - 仓库采用 MIT 许可证。
 
