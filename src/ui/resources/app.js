@@ -188,6 +188,12 @@ function renderRunning(running) {
   text.textContent = running ? "停止接收器" : "启动接收器";
   pill.classList.toggle("running", running);
   pill.innerHTML = running ? '<span class="dot"></span>接收中' : '<span class="dot"></span>未运行';
+  // The hero card button mirrors the state: it starts the receiver when
+  // stopped and stops it when running.
+  const homeBtn = $("home-start");
+  homeBtn.textContent = running ? "立即停止" : "立即启动";
+  homeBtn.classList.toggle("btn-danger", running);
+  homeBtn.classList.toggle("btn-primary", !running);
   const hero = $("hero-icon");
   const title = $("hero-title");
   const sub = $("hero-sub");
@@ -386,7 +392,12 @@ $("btn-power").addEventListener("click", () => {
   }
 });
 $("home-start").addEventListener("click", () => {
-  if (state && !state.running) sendCommand("start", {}).then(() => sendCommand("getState", {}));
+  if (!state) return;
+  if (state.running) {
+    sendCommand("stop", {});
+  } else {
+    sendCommand("start", {}).then(() => sendCommand("getState", {}));
+  }
 });
 $("btn-tray").addEventListener("click", () => {
   sendCommand("hideToTray", {});

@@ -1,3 +1,12 @@
+# AirPlayWin 1.1.4
+
+AirPlayWin 1.1.4 fixes the home-page start button: it now mirrors the
+receiver state — "立即启动" while stopped, "立即停止" (danger styling) while
+running — and clicking it toggles the receiver accordingly.
+
+See 1.1.0 below for the feature set, 1.1.1 for the DPI fix, 1.1.2 for
+volume synchronization, and 1.1.3 for the general quality pass.
+
 # AirPlayWin 1.1.3
 
 AirPlayWin 1.1.3 is a general software-quality pass over the graphical application:
